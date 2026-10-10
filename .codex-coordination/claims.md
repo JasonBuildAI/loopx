@@ -5,3 +5,4 @@
 
 
 - claim: agent-j7m4 | 2026-10-10T18:16:10Z | 旧PR: #none | 缺陷: the public/private boundary scan blocks POSIX private document paths but not the same paths spelled with native Windows backslash separators | 文件: loopx/contract.py,tests/test_contract_public_boundary_prefilter.py | issue: #6160 | pr: #6161
+- claim: agent-b7q4 | 2026-10-10T18:49:44Z | 旧PR: #none | 缺陷: Claude Code goal-mode 的 PreToolUse hook 与 statusline 用宿主 locale 编码读写 stdio；非 UTF-8 宿主（zh-CN Windows gbk）下 armed 网关读非 ASCII 事件丢失目标 -> 返回 {} 静默放行，statusline 丢失整段 | 文件: loopx/claude_goal_mode/hooks/goal_policy.py, loopx/claude_goal_mode/statusline/goal_status.py | issue: #none | pr: #none

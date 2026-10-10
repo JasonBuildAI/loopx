@@ -21,7 +21,7 @@ unbounded `LOCK_EX` wait is not part of this contract.
 ## Holder And Incident Records
 
 After acquisition, the holder writes public-safe JSON to the POSIX `*.lock`
-file or atomically overwrites the Windows `*.lock.holder.json` sidecar:
+file or atomically overwrites the Windows `*.lock.holder` sidecar:
 
 - stable hashed `lock_id` (never an absolute target path);
 - PID, agent id, operation, policy, and acquisition time;

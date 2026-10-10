@@ -151,7 +151,10 @@ def _open_lock_descriptor(path: Path, *, flags: int) -> int:
 def lock_holder_path(path: Path) -> Path:
     lock_path = _lock_path(path)
     if os.name == "nt":
-        return lock_path.with_name(f"{lock_path.name}.holder.json")
+        # The sidecar is ephemeral lock metadata, not state. Its name must not
+        # end in .json so a *.json state walker never harvests a holder that a
+        # concurrent lock deletes mid-walk (issue #6128).
+        return lock_path.with_name(f"{lock_path.name}.holder")
     return lock_path
 
 

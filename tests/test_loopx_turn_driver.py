@@ -2057,7 +2057,7 @@ raise SystemExit(0 if artifact.read_text(encoding="utf-8") == "validated" else 7
             for path in (runtime / "goals" / "loopx-turn-fixture" / "turns").glob(
                 "*.json"
             )
-            if not path.name.endswith(".lock.holder.json")
+            if not path.name.endswith(".lock.holder")
         ]
         assert len(journal_paths) == 1
         stored = json.loads(journal_paths[0].read_text(encoding="utf-8"))

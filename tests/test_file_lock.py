@@ -97,6 +97,7 @@ def _acquire_and_release_cross_runtime_lock(
 
 def test_exclusive_lock_persists_public_safe_holder_metadata(tmp_path: Path) -> None:
     target = tmp_path / "state.json"
+    target.write_text("{}\n", encoding="utf-8")
 
     with exclusive_file_lock(
         target,
@@ -113,6 +114,9 @@ def test_exclusive_lock_persists_public_safe_holder_metadata(tmp_path: Path) -> 
         assert holder["operation"] == "todo-update"
         assert holder["acquired_at"].endswith("Z")
         assert "released_at" not in holder
+        # The Windows holder sidecar is ephemeral lock metadata: a *.json state
+        # walker must never harvest it and read it as a record (issue #6128).
+        assert sorted(p.name for p in tmp_path.glob("*.json")) == [target.name]
 
     released = json.loads(holder_path.read_text(encoding="utf-8"))
     assert released["released_at"].endswith("Z")

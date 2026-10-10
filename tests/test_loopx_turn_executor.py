@@ -530,7 +530,7 @@ def _journal(runtime_root: Path) -> dict[str, object]:
     journal_paths = [
         path
         for path in (runtime_root / "goals" / "fixture-goal" / "turns").glob("*.json")
-        if not path.name.endswith(".lock.holder.json")
+        if not path.name.endswith(".lock.holder")
     ]
     assert len(journal_paths) == 1
     return json.loads(journal_paths[0].read_text(encoding="utf-8"))
@@ -1226,7 +1226,7 @@ def _cadence_starts(runtime_root: Path) -> list[dict[str, object]]:
 
     stores = []
     for path in sorted(runtime_root.rglob("*.json")):
-        if path.name.endswith(".lock.holder.json"):
+        if path.name.endswith(".lock.holder"):
             continue
         payload = json.loads(path.read_text(encoding="utf-8"))
         if (
@@ -1321,7 +1321,7 @@ def test_reserved_managed_start_recovers_after_death_before_the_first_journal_wr
     assert not [
         path
         for path in (runtime_root / "goals" / "fixture-goal" / "turns").glob("*.json")
-        if not path.name.endswith(".lock.holder.json")
+        if not path.name.endswith(".lock.holder")
     ]
     assert calls == {"host": 0, "writeback": 0, "spend": 0, "scheduler": 0}
 
@@ -1702,7 +1702,7 @@ def test_run_once_rejects_corrupted_failed_turn_recovery_before_host_retry(
         for path in (tmp_path / "runtime" / "goals" / "fixture-goal" / "turns").glob(
             "*.json"
         )
-        if not path.name.endswith(".lock.holder.json")
+        if not path.name.endswith(".lock.holder")
     ]
     assert len(journal_paths) == 1
     journal = json.loads(journal_paths[0].read_text(encoding="utf-8"))

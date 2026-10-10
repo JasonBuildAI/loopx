@@ -216,7 +216,7 @@ def test_inspection_returns_versioned_allowlisted_projection_without_mutation(
     before_entries = {
         path.relative_to(tmp_path)
         for path in tmp_path.rglob("*")
-        if not path.name.endswith((".lock", ".lock.holder.json"))
+        if not path.name.endswith((".lock", ".lock.holder"))
     }
 
     result = executor.inspect_loopx_turn_journal(
@@ -229,7 +229,7 @@ def test_inspection_returns_versioned_allowlisted_projection_without_mutation(
     after_entries = {
         path.relative_to(tmp_path)
         for path in tmp_path.rglob("*")
-        if not path.name.endswith((".lock", ".lock.holder.json"))
+        if not path.name.endswith((".lock", ".lock.holder"))
     }
     assert result == {
         "ok": True,

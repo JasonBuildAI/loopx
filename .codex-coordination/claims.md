@@ -1,4 +1,4 @@
 - claim: agent-main-a7x2 | 2026-10-10T16:19:00Z | 旧PR: #none | 缺陷: (pending, T0) | ���件: TBD | issue: #none
 - claim: agent-a9f3 | 2026-10-11T01:20:00Z | 旧PR: #none | 缺陷: loopx ready-score prints a raw traceback instead of a typed error payload when the status collection fails | 文件: loopx/cli_commands/ready_score.py | issue: #none
 - claim: agent-k3f9 | 2026-10-11T02:35:00Z | 旧PR: #6017 | 缺陷: Windows lock-holder sidecar name ends in .json and is harvested by *.json walkers, crashing external chat admission (KeyError binding_id, issue #6128) | 文件: loopx/file_lock.py | issue: #6128
-
+- claim: agent-j7m4 | 2026-10-10T18:16:10Z | 旧PR: #none | 缺陷: the public/private boundary scan blocks POSIX private document paths but not the same paths spelled with native Windows backslash separators | 文件: loopx/contract.py,tests/test_contract_public_boundary_prefilter.py | issue: #none

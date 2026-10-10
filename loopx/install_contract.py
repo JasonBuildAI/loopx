@@ -35,8 +35,14 @@ def _powershell_literal(value: str | Path) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def _is_windows_host() -> bool:
+    """Whether printed commands target PowerShell instead of a POSIX shell."""
+
+    return os.name == "nt"
+
+
 def local_install_command(repo_root: Path, *, skip_skills: bool = False) -> str:
-    if os.name == "nt":
+    if _is_windows_host():
         return (
             "pwsh -NoLogo -NoProfile -File "
             f"{_powershell_literal(repo_root / 'scripts' / 'install-windows.ps1')} "
@@ -53,7 +59,7 @@ def no_clone_upgrade_command(
     doctor_agent_type: str | None = None,
     skip_skills: bool = False,
 ) -> str:
-    if os.name == "nt":
+    if _is_windows_host():
         repo_root = Path(__file__).resolve().parents[1]
         doctor_agent_arg = (
             f" --agent-type {_powershell_literal(doctor_agent_type)}"
@@ -90,9 +96,9 @@ def no_clone_upgrade_command(
 def install_repair_command() -> str:
     """PyPI repair guidance that runs as printed on this host."""
 
-    if os.name == "nt":
+    if _is_windows_host():
         return (
-            f"{shlex.quote(sys.executable)} -m pip install --upgrade loopx\n"
+            f"& {_powershell_literal(sys.executable)} -m pip install --upgrade loopx\n"
             f"{DEFAULT_WORKFLOW_SKILL_INSTALL_COMMAND}\n"
             "loopx doctor"
         )
@@ -102,6 +108,6 @@ def install_repair_command() -> str:
 def archive_fallback_install_command() -> str:
     """Archive fallback guidance that runs as printed on this host."""
 
-    if os.name == "nt":
+    if _is_windows_host():
         return no_clone_upgrade_command()
     return ARCHIVE_FALLBACK_INSTALL_COMMAND

@@ -1,27 +1,30 @@
 """The Claude Code goal-mode entry scripts must pin their own stdio to UTF-8.
 
-Claude Code pipes the PreToolUse event and the statusline session JSON as UTF-8,
-and reads both answers as UTF-8. `sys.stdin` / `sys.stdout` inside these scripts
-default to the host locale codec instead - `cp936` on a zh-CN Windows host. Under
-that codec the PreToolUse gate decodes a non-ASCII event into mojibake, misses
-the project goal and prints `{}`, so the should_run / write_scope gate silently
-fails OPEN for every tool; the statusline cannot encode the glyphs of its own
-segment and degrades to a bare `[loopx <goal>]`.
+Claude Code pipes the PreToolUse event, the statusline session JSON and the
+`/loopx` command's arguments as UTF-8, and reads every answer as UTF-8.
+`sys.stdin` / `sys.stdout` inside these scripts default to the host locale codec
+instead - `cp936` on a zh-CN Windows host. Under that codec the PreToolUse gate
+decodes a non-ASCII event into mojibake, misses the project goal and prints `{}`,
+so the should_run / write_scope gate silently fails OPEN for every tool, and the
+statusline and the `/loopx` state line cannot encode their own `▶` / `⏸` / `⚠`
+glyphs, so they render nothing or die with `UnicodeEncodeError`.
 
 `test_cli_stdio_utf8.py` guards the shipped CLI's own streams, and
 `test_loopx_text_io_utf8.py` / `test_runtime_subprocess_utf8.py` guard the files
-and subprocess pipes LoopX opens. These standalone hook scripts are the
-remaining locale-dependent surface, so they are covered here.
+and subprocess pipes LoopX opens. The entry scripts this plugin launches itself -
+the gate, the statusline and the `/loopx` command - are the remaining
+locale-dependent surface, so they are covered here.
 
-The fixture keeps the project path and the goal id non-ASCII, so a missing pin
+The fixtures keep the project path and the goal id non-ASCII, so a missing pin
 fails on the decode side (the event's `cwd` becomes mojibake, so the armed goal
-is no longer found) *and* on the encode side. The statusline's own segment
-normally carries the same risk through its glyphs; a non-ASCII goal id exercises
-that encode path whichever branch the `should_run` probe takes.
+is no longer found) *and* on the encode side. A non-ASCII goal id exercises that
+encode path whichever branch the `should_run` probe takes, since that probe is
+not reachable on every host.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -31,6 +34,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HOOK = REPO_ROOT / "loopx/claude_goal_mode/hooks/goal_policy.py"
 STATUSLINE = REPO_ROOT / "loopx/claude_goal_mode/statusline/goal_status.py"
+GOALMODE = REPO_ROOT / "loopx/claude_goal_mode/scripts/goalmode_cmd.py"
 
 # A codec the scripts must not fall back to. `gbk` cannot encode the statusline
 # glyphs and decodes the UTF-8 project path below into mojibake, so a missing pin
@@ -38,6 +42,7 @@ STATUSLINE = REPO_ROOT / "loopx/claude_goal_mode/statusline/goal_status.py"
 LOCALE_CODEC = "gbk"
 PROJECT_NAME = "项目"
 GOAL_ID = "目标-goal"
+GLYPHS = ("▶", "⏸", "⚠")
 
 
 def _arm(project: Path) -> Path:
@@ -64,7 +69,7 @@ def _arm(project: Path) -> Path:
 
 
 def _run(
-    script: Path, project: Path, payload: bytes, codec: str
+    script: Path, project: Path, payload: bytes, codec: str, *args: str
 ) -> subprocess.CompletedProcess[bytes]:
     environment = {
         **os.environ,
@@ -73,7 +78,7 @@ def _run(
         "PYTHONUTF8": "0",
     }
     return subprocess.run(
-        [sys.executable, str(script)],
+        [sys.executable, str(script), *args],
         cwd=project,
         env=environment,
         input=payload,
@@ -125,6 +130,51 @@ def test_pretooluse_write_is_not_waved_through_under_a_locale_codec(tmp_path: Pa
     assert result.stdout != b"{}", result.stdout
     decision = json.loads(result.stdout.decode("utf-8"))
     assert decision["hookSpecificOutput"]["permissionDecision"] in {"allow", "deny"}
+
+
+def test_slash_command_status_survives_a_locale_codec(tmp_path: Path) -> None:
+    """`/loopx status` is shown to the user verbatim, glyphs included."""
+
+    project = _arm(tmp_path / PROJECT_NAME)
+
+    locale_result = _run(GOALMODE, project, b"", LOCALE_CODEC, "status")
+    utf8_result = _run(GOALMODE, project, b"", "utf-8", "status")
+
+    for result in (locale_result, utf8_result):
+        assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+        rendered = result.stdout.decode("utf-8")
+        assert GOAL_ID in rendered, rendered
+        # Every state line carries one of these, whichever way the probe went.
+        assert any(g.encode("utf-8") in result.stdout for g in GLYPHS), rendered
+
+
+def _unencodable(text: str, codec: str) -> str:
+    """The first character of `text` the codec cannot represent, or `""`."""
+
+    for char in text:
+        try:
+            char.encode(codec)
+        except UnicodeEncodeError:
+            return char
+    return ""
+
+
+def test_rendered_segment_needs_a_codec_the_locale_cannot_fall_back_to() -> None:
+    """Why the stdout pin matters: the segment's own glyphs are not `gbk`.
+
+    The subprocess test above cannot assert a glyph directly, because the
+    `should_run` probe is unreachable on some hosts and the statusline then
+    degrades to its bare `[loopx <goal>]` fallback. This pins the encode side of
+    the contract deterministically instead.
+    """
+
+    spec = importlib.util.spec_from_file_location("goal_status_under_test", STATUSLINE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    segment = module._render(GOAL_ID, {"should_run": True, "recommended_action": "step"})
+    assert "▶" in segment, segment
+    assert _unencodable(segment, LOCALE_CODEC) in GLYPHS, segment
 
 
 def test_statusline_keeps_its_segment_under_a_locale_codec(tmp_path: Path) -> None:

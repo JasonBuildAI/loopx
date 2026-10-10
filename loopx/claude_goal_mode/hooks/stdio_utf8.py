@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
 """Pin a Claude Code entry script's own stdio to UTF-8.
 
-Claude Code pipes UTF-8 across both stdio boundaries of this plugin: the session
-/ tool-event JSON on stdin, and the hook decision or statusline segment on
-stdout. ``sys.stdin`` / ``sys.stdout`` default to the host locale codec instead -
-``cp936`` on a zh-CN Windows host. There, ``goal_policy.py`` decodes a non-ASCII
-event into mojibake, so ``active_context`` misses the project goal and the hook
-emits ``{}``: the should_run / write_scope gate silently fails OPEN for every
-tool. ``goal_status.py`` cannot encode the glyphs of its own segment and degrades
-to a bare ``[loopx <goal>]``.
+Claude Code pipes UTF-8 across every stdio boundary of this plugin: the session /
+tool-event JSON on stdin, and the hook decision, the statusline segment or the
+``/loopx`` output on stdout. ``sys.stdin`` / ``sys.stdout`` default to the host
+locale codec instead - ``cp936`` on a zh-CN Windows host. There, a non-ASCII
+event decodes into mojibake, so ``active_context`` misses the project goal and
+``goal_policy.py`` emits ``{}``: the should_run / write_scope gate silently fails
+OPEN for every tool. The statusline and ``goalmode_cmd.py`` lose their own
+segment instead, because ``▶`` / ``⏸`` / ``⚠`` are not encodable in ``gbk`` - a
+non-ASCII session path no longer resolves to a goal (the statusline prints
+nothing) and the state line of ``/loopx status`` raises ``UnicodeEncodeError``.
 
-``loopx/entrypoint.py`` pins the same streams for the shipped CLI; these two
-scripts are launched directly by Claude Code, outside that entrypoint, so they
-pin their own. Input stays strict, so a malformed event is refused instead of
-being repaired into a valid one; output falls back to ``replace`` so an
-unencodable character cannot abort an already-computed decision.
+These scripts are launched directly by Claude Code, outside
+``loopx/entrypoint.py``, and reach this module through the hooks directory that
+is already on their ``sys.path``. That CLI entrypoint pins the same streams for
+the shipped CLI with the same policy - skip a stream that already reports UTF-8,
+strict stdin, ``replace`` output - deliberately kept as a separate
+implementation so a plugin hook never depends on the CLI bootstrap; change both
+together. Input stays strict so a non-UTF-8 byte is never repaired into a
+different event; output falls back to ``replace`` so an unencodable character
+cannot abort an already-computed answer.
 """
 from __future__ import annotations
 

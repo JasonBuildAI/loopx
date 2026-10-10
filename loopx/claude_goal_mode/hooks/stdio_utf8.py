@@ -7,10 +7,11 @@ tool-event JSON on stdin, and the hook decision, the statusline segment or the
 locale codec instead - ``cp936`` on a zh-CN Windows host. There, a non-ASCII
 event decodes into mojibake, so ``active_context`` misses the project goal and
 ``goal_policy.py`` emits ``{}``: the should_run / write_scope gate silently fails
-OPEN for every tool. The statusline and ``goalmode_cmd.py`` lose their own
-segment instead, because ``▶`` / ``⏸`` / ``⚠`` are not encodable in ``gbk`` - a
-non-ASCII session path no longer resolves to a goal (the statusline prints
-nothing) and the state line of ``/loopx status`` raises ``UnicodeEncodeError``.
+OPEN for every tool. Statusline and ``/loopx`` output are lost on the encode
+side instead, because ``▶`` / ``⏸`` / ``⚠`` cannot be encoded in ``gbk``: the
+state line of ``/loopx status`` raises ``UnicodeEncodeError`` whatever the path,
+and the statusline prints nothing for a non-ASCII session path (with an ASCII
+path the goal still resolves, so only its glyphs are lost).
 
 These scripts are launched directly by Claude Code, outside
 ``loopx/entrypoint.py``, and reach this module through the hooks directory that

@@ -148,15 +148,16 @@ def test_slash_command_status_survives_a_locale_codec(tmp_path: Path) -> None:
         assert any(g.encode("utf-8") in result.stdout for g in GLYPHS), rendered
 
 
-def _unencodable(text: str, codec: str) -> str:
-    """The first character of `text` the codec cannot represent, or `""`."""
+def _unencodable(text: str, codec: str) -> list[str]:
+    """The characters of `text` the codec cannot represent."""
 
+    hazard = []
     for char in text:
         try:
             char.encode(codec)
         except UnicodeEncodeError:
-            return char
-    return ""
+            hazard.append(char)
+    return hazard
 
 
 def test_rendered_segment_needs_a_codec_the_locale_cannot_fall_back_to() -> None:
@@ -173,8 +174,10 @@ def test_rendered_segment_needs_a_codec_the_locale_cannot_fall_back_to() -> None
     spec.loader.exec_module(module)
 
     segment = module._render(GOAL_ID, {"should_run": True, "recommended_action": "step"})
-    assert "▶" in segment, segment
-    assert _unencodable(segment, LOCALE_CODEC) in GLYPHS, segment
+    # The segment carries a state glyph the locale codec cannot encode, which is
+    # why stdout needs the pin and not only stdin. Order-independent: any glyph
+    # in the segment counts, not just the first unencodable character.
+    assert set(_unencodable(segment, LOCALE_CODEC)) & set(GLYPHS), segment
 
 
 def test_statusline_keeps_its_segment_under_a_locale_codec(tmp_path: Path) -> None:

@@ -1337,3 +1337,26 @@ def test_scoped_recovery_does_not_probe_unrelated_app_and_revocation_blocks_repl
         assert provider.writes == [] and store.list_sessions() == []
     finally:
         runtime.close()
+
+
+def test_lock_metadata_sidecar_is_never_read_as_a_request(ordinary):  # noqa: F811
+    """A Windows lock sibling is metadata, not a delivery record (#6128)."""
+    _store, runtime, _provider, transport = connect(ordinary)
+    try:
+        reference = "0" * 24
+        record = {"schema_version": "lark_private_chat_delivery_v0", "binding_id": "binding",
+                  "status": "captured", "deliveries": {}}
+        for root in (transport.root, transport.core.root):
+            root.mkdir(parents=True, exist_ok=True)
+            (root / f"{reference}.json").write_text(json.dumps(record), encoding="utf-8")
+            (root / f"{reference}.json.lock").write_text("", encoding="utf-8")
+            # Releases before the holder rename left this *.json lock sibling, so
+            # a *.json store read the holder as a request and raised KeyError.
+            (root / f"{reference}.json.lock.holder.json").write_text(
+                json.dumps({"schema_version": "file_lock_holder_v0"}), encoding="utf-8")
+
+        assert [path.stem for path in transport.pending_delivery_paths()] == [reference]
+        assert transport.health() == {"binding": {"pending_count": 1, "recovery_count": 0}}
+        assert [row["binding_id"] for row in transport.core.pending()] == ["binding"]
+    finally:
+        runtime.close()

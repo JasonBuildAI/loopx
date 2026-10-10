@@ -151,9 +151,9 @@ def _open_lock_descriptor(path: Path, *, flags: int) -> int:
 def lock_holder_path(path: Path) -> Path:
     lock_path = _lock_path(path)
     if os.name == "nt":
-        # The sidecar is ephemeral lock metadata, not state. Its name must not
-        # end in .json so a *.json state walker never harvests a holder that a
-        # concurrent lock deletes mid-walk (issue #6128).
+        # The sidecar is advisory lock metadata, not state. Its name must not
+        # end in .json: a *.json state walker reads every match as a record, so
+        # it would read this holder as one (issue #6128).
         return lock_path.with_name(f"{lock_path.name}.holder")
     return lock_path
 
@@ -245,6 +245,22 @@ def _write_holder_sidecar(holder_path: Path, record: dict[str, object]) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
+def _discard_legacy_holder_sidecar(lock_path: Path) -> None:
+    """Best-effort removal of a pre-rename ``<lock>.holder.json`` sidecar.
+
+    Releases before the holder rename wrote the Windows sidecar with a ``.json``
+    suffix, so a ``*.json`` state store harvested lock metadata and read it as a
+    record (issue #6128). The renamed sidecar carries no suffix and no longer
+    matches, but an upgraded runtime root still holds the old file. Clear that
+    sibling while this lock is held so the fix also covers existing installs.
+    """
+
+    try:
+        lock_path.with_name(f"{lock_path.name}.holder.json").unlink()
+    except OSError:
+        return
+
+
 def _persist_holder_record(
     lock_file: TextIO,
     *,
@@ -252,6 +268,7 @@ def _persist_holder_record(
     holder_path: Path,
     record: dict[str, object],
 ) -> None:
+    _discard_legacy_holder_sidecar(lock_path)
     if holder_path == lock_path:
         _write_holder_record(lock_file, record)
         return

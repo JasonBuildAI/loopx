@@ -32,6 +32,11 @@ handle from reading the locked byte. POSIX retains the existing single-file
 contract, where advisory metadata and `flock` share `*.lock`. In both cases the
 kernel lock, not the metadata file's existence, is authoritative.
 
+The Windows sidecar name carries no `.json` suffix, so a `*.json` state store
+never reads lock metadata as a record (issue #6128). Acquisition also deletes
+any `<lock>.holder.json` sibling left by a release before that rename, while the
+lock is held, so an upgraded runtime root stops presenting the old artifact.
+
 A timeout appends one `file_lock_incident_v0` row to the sibling
 `*.lock.incidents.jsonl` channel. That append uses `O_APPEND` directly and does
 not acquire the blocked lock. The row contains holder and waiter identities,

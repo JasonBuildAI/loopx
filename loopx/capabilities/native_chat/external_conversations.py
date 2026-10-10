@@ -9,11 +9,17 @@ from __future__ import annotations
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 import hashlib
+import re
 from typing import Any
 
 from ...chat_store import _atomic_write_json, _read_json
 from ...chat_attachments import normalize_chat_image_attachments
 from ...file_lock import exclusive_file_lock
+
+# An external request reference is a 24-hex digest: it names the journal file
+# and enters the lock path, so a record walker accepts only that shape and never
+# a sibling lock artifact such as the holder sidecar (issue #6128).
+_REQUEST_REF_PATTERN = re.compile(r"[a-f0-9]{24}")
 
 
 def _commission_goal_identity(goal: dict[str, Any]) -> dict[str, str]:
@@ -37,10 +43,9 @@ class ChatExternalConversations:
               message: str, command: str | None = None,
               attachments: list[dict[str, Any]] | None = None,
               origin: str = "lark") -> dict[str, Any]:
-        import re
         if origin not in {"lark", "external"}:
             raise ValueError("unsupported external conversation origin")
-        if not re.fullmatch(r"[a-f0-9]{24}", request_ref):
+        if not _REQUEST_REF_PATTERN.fullmatch(request_ref):
             raise ValueError("invalid external request reference")
         if command not in {None, "agents", "select_agent", "select_project", "status", "help", "new", "stop", "unsupported", "commission", "confirm_commission", "cancel_commission", "stop_commission", "resume_commission"}:
             raise ValueError("unsupported external conversation command")
@@ -48,7 +53,7 @@ class ChatExternalConversations:
         # Check path-safe shape here; the typed owner checks current grants
         # and provider identity after both fences are acquired.
         for ref in (binding_id, source.get("source_ref")):
-            if not isinstance(ref, str) or not re.fullmatch(r"[a-f0-9]{24}", ref):
+            if not isinstance(ref, str) or not _REQUEST_REF_PATTERN.fullmatch(ref):
                 raise ValueError("invalid external conversation source reference")
         path = self.root / f"{request_ref}.json"
         with exclusive_file_lock(self.root / "source-fences" / f"{binding_id}.{source['source_ref']}.json", operation="route_external_chat_request"), exclusive_file_lock(path, operation="admit_external_chat_request"):
@@ -157,7 +162,6 @@ class ChatExternalConversations:
                 except (ValueError, OSError, KeyError):
                     continue
             if row["command"] == "select_agent":
-                import re
                 match = re.fullmatch(r"/agent ([a-f0-9]{24})", row["message"].strip())
                 chosen = next((item for item in choices if match and item["target_ref"] == match[1]), None)
                 if chosen is None:
@@ -251,7 +255,8 @@ class ChatExternalConversations:
             message=row["message"], source_id=row["request_ref"])
 
     def pending(self) -> list[dict[str, Any]]:
-        return [_read_json(path) for path in sorted(self.root.glob("*.json"))]
+        return [_read_json(path) for path in sorted(self.root.glob("*.json"))
+                if _REQUEST_REF_PATTERN.fullmatch(path.stem)]
 
     def read_request(self, request_ref: str) -> dict[str, Any]:
         return _read_json(self.root / f"{request_ref}.json")

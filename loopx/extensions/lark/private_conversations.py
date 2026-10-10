@@ -32,6 +32,11 @@ from .private_progress import ACTIVITY_UPDATE_INTERVAL_SEC, UPDATE_INTERVAL_SEC,
 # Reserve edits for a final/closing notice; continue long Turns on a new draft.
 PROGRESS_EDIT_BUDGET = 12
 
+# A private delivery is keyed by its 24-hex request reference, which also names
+# the journal file and its lock. A record walker accepts only that shape and
+# never a sibling lock artifact such as the holder sidecar (issue #6128).
+_REQUEST_REF_PATTERN = re.compile(r"[a-f0-9]{24}")
+
 
 class LarkPrivateConversations:
     def __init__(self, *, controller: Any, runtime_root: Path, runner: Any, cli_bin: str,
@@ -76,6 +81,8 @@ class LarkPrivateConversations:
     def health(self) -> dict[str, dict[str, int]]:
         health: dict[str, dict[str, int]] = {}
         for path in self.root.glob("*.json"):
+            if not _REQUEST_REF_PATTERN.fullmatch(path.stem):
+                continue
             row = _read_json(path)
             entry = health.setdefault(row["binding_id"], {"pending_count": 0, "recovery_count": 0})
             if row["status"] != "delivered":
@@ -316,7 +323,7 @@ class LarkPrivateConversations:
         selected = self.bindings.session_context(saved)
         client = str(turn.get("client_turn_id") or "")
         request = client.removeprefix("external-")
-        if client != f"external-{request}" or not re.fullmatch(r"[a-f0-9]{24}", request):
+        if client != f"external-{request}" or not _REQUEST_REF_PATTERN.fullmatch(request):
             raise ValueError("original private request unavailable")
         record = _read_json(self.root / f"{request}.json")
         native = self.core.read_request(request)
@@ -571,7 +578,8 @@ class LarkPrivateConversations:
     def pending_delivery_paths(self) -> list[Path]:
         """The durable transport store is the queue; no in-memory admission."""
         return [path for path in sorted(self.root.glob("*.json"))
-                if _read_json(path)["status"] != "delivered"]
+                if _REQUEST_REF_PATTERN.fullmatch(path.stem)
+                and _read_json(path)["status"] != "delivered"]
 
     def reconcile(self) -> int:
         return sum(self.reconcile_request(path) for path in self.pending_delivery_paths())

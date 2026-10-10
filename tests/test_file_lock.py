@@ -114,14 +114,30 @@ def test_exclusive_lock_persists_public_safe_holder_metadata(tmp_path: Path) -> 
         assert holder["operation"] == "todo-update"
         assert holder["acquired_at"].endswith("Z")
         assert "released_at" not in holder
-        # The Windows holder sidecar is ephemeral lock metadata: a *.json state
-        # walker must never harvest it and read it as a record (issue #6128).
+        # The Windows holder sidecar is advisory lock metadata, not a record: a
+        # *.json state store must never harvest it as one (issue #6128).
         assert sorted(p.name for p in tmp_path.glob("*.json")) == [target.name]
 
     released = json.loads(holder_path.read_text(encoding="utf-8"))
     assert released["released_at"].endswith("Z")
     assert lock_path.exists()
     assert holder_path.exists()
+
+
+def test_acquisition_discards_a_pre_rename_json_holder_sidecar(tmp_path: Path) -> None:
+    target = tmp_path / "state.json"
+    target.write_text("{}\n", encoding="utf-8")
+    # A release before the holder rename left this *.json sibling behind, and a
+    # *.json store then read lock metadata as a request. Acquisition clears it.
+    legacy = tmp_path / "state.json.lock.holder.json"
+    legacy.write_text('{"schema_version": "file_lock_holder_v0"}\n', encoding="utf-8")
+
+    with exclusive_file_lock(target, operation="todo-update") as lock_path:
+        assert lock_path.name == "state.json.lock"
+        assert not legacy.exists()
+
+    assert not legacy.exists()
+    assert sorted(p.name for p in tmp_path.glob("*.json")) == [target.name]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="symlink creation requires privileges")

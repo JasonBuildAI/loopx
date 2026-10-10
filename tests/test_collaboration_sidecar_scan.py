@@ -45,15 +45,21 @@ def test_sidecars(tmp_path_factory):
     operation = next((store / "peer-operations").glob(f"*/{operation_id}.json"))
 
     for record in (entry, operation):
-        sidecar = record.with_name(f"{record.stem}.lock.lock.holder.json")
-        # Windows creates this on every lock acquisition. Simulate the same
-        # persistent artifact on POSIX so both CI platforms guard the scan.
-        if not sidecar.exists():
+        # A Windows lock acquisition writes <record>.lock beside this record and
+        # a <record>.lock.holder sidecar; before the .json rename the sidecar was
+        # <record>.lock.holder.json, which a *.json scan can still harvest on an
+        # upgraded store (issue #6128). Simulate all three on POSIX so both CI
+        # platforms guard the scan.
+        for sidecar in (
+            record.with_name(f"{record.name}.lock"),
+            record.with_name(f"{record.name}.lock.holder"),
+            record.with_name(f"{record.name}.lock.holder.json"),
+        ):
             sidecar.write_text(
                 json.dumps({"schema_version": "file_lock_holder_v0"}),
                 encoding="utf-8",
             )
-        assert sidecar.exists()
+            assert sidecar.exists()
     entry.with_name("foreign.json").write_text("{}", encoding="utf-8")
 
     page = pending(tmp_path, "delivery", "receiver")

@@ -155,9 +155,14 @@ uv run --extra test python -m benchmark.edgebench.export_report \
 
 `.gitattributes` pins this archive to LF line endings, so the recorded digests
 verify even when Git checks out other text files with `core.autocrlf=true`. Git
-does not rewrite files already materialized in an existing checkout, so run
-`git checkout -- benchmark/edgebench/studies/portfolio-ten-arm-20261006/data`
-once there before verifying.
+does not rewrite files already materialized in an existing checkout and a plain
+checkout skips them, so delete the stale directory once — `rm -rf` below, or
+`Remove-Item -Recurse -Force` on PowerShell — and restore it before verifying:
+
+```sh
+rm -rf benchmark/edgebench/studies/portfolio-ten-arm-20261006/data
+git checkout -- benchmark/edgebench/studies/portfolio-ten-arm-20261006/data
+```
 
 For another terminal collection, supply an explicit JSON list of
 `{"row": <canonical board row>, "settings": <reviewed supplemental settings>}`

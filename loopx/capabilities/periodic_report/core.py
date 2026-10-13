@@ -36,13 +36,15 @@ _REPORTABLE_TRIGGER_KINDS = {
     "vision_closed",
 }
 # The private roots take whatever separator the host or a serialized string
-# chose: a separator run at every junction also covers the native Windows
+# chose: matching the separator at every junction covers the native Windows
 # spelling (C:\Users\<name>\...), the UNC spelling (\\server\Users\<name>\...)
 # and the escaped spelling a JSON string produces (C:\\Users\\<name>\\...),
 # the class the boundary scan (#6161) and the public-safe-outbound scanner
-# (#6223) reject. Paths outside these roots stay untouched.
+# (#6223) reject. The lead is a single separator so a long non-root separator
+# run cannot make the raw-value scan quadratic. Paths outside these roots
+# stay untouched.
 _LOCAL_PATH_SURFACE_PATTERN = re.compile(
-    r"(?<!<)[\\/]+(?:Users|Volumes|home|var[\\/]+folders|tmp|private[\\/]+tmp)"
+    r"(?<!<)[\\/](?:Users|Volumes|home|var[\\/]+folders|tmp|private[\\/]+tmp)"
     r"[\\/]+[^\s`'\"<>]+"
 )
 _FORBIDDEN_RAW_KEYS = {

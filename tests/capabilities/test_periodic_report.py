@@ -5,6 +5,7 @@ import io
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -234,6 +235,8 @@ def test_private_path_spelling_variants_are_rejected() -> None:
         "escaped-drive": "C:" + doubled + doubled.join(parts),
         "escaped-unc": doubled * 2 + doubled.join(["fileserver", *parts]),
         "native-tmp": "C:" + separator + separator.join(["tmp", "scratch.txt"]),
+        "native-private-tmp": "C:" + separator + separator.join(["private", "tmp", "scratch.log"]),
+        "native-var-folders": "C:" + separator + separator.join(["var", "folders", "app-cache"]),
     }
     for label, private_ref in denied.items():
         try:
@@ -255,6 +258,17 @@ def test_public_windows_paths_and_urls_stay_accepted() -> None:
     )
     for public_ref in accepted:
         build_periodic_report_run(_request_with_snapshot_ref(public_ref))
+
+
+def test_long_separator_run_stays_bounded() -> None:
+    # The raw-value scan runs before field length validation, so a long
+    # non-root separator run must stay linear; a quadratic rescan would
+    # stall the caller instead of failing fast on the length error.
+    request = _request_with_snapshot_ref("\\" * 32_768)
+    started = time.perf_counter()
+    with pytest.raises(ValueError, match="exceeds 500 characters"):
+        build_periodic_report_run(request)
+    assert time.perf_counter() - started < 1.0
 
 
 def test_periodic_report_cli_composes_json(tmp_path, capsys) -> None:

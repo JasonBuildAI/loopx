@@ -215,6 +215,48 @@ def test_raw_content_and_incomplete_sink_roles_are_rejected() -> None:
         build_periodic_report_run(missing_delivery)
 
 
+def _request_with_snapshot_ref(value: str) -> dict[str, object]:
+    request = _request()
+    request["source_snapshots"][0]["snapshot_ref"] = value  # type: ignore[index]
+    return request
+
+
+def test_private_path_spelling_variants_are_rejected() -> None:
+    # The same private path spelled the way a Windows host or a serialized
+    # string writes it is refused like the POSIX spelling above.
+    separator = "\\"
+    doubled = separator * 2
+    parts = ["Users", "example-user", "notes.md"]
+    denied = {
+        "native-drive": "C:" + separator + separator.join(parts),
+        "unc": doubled + separator.join(["fileserver", *parts]),
+        "rooted-native": separator + separator.join(parts),
+        "escaped-drive": "C:" + doubled + doubled.join(parts),
+        "escaped-unc": doubled * 2 + doubled.join(["fileserver", *parts]),
+        "native-tmp": "C:" + separator + separator.join(["tmp", "scratch.txt"]),
+    }
+    for label, private_ref in denied.items():
+        try:
+            build_periodic_report_run(_request_with_snapshot_ref(private_ref))
+        except ValueError as exc:
+            assert "private path or credential-like value" in str(exc), label
+        else:
+            raise AssertionError(f"{label} accepted private path {private_ref!r}")
+
+
+def test_public_windows_paths_and_urls_stay_accepted() -> None:
+    # Ordinary drive/UNC paths outside the private roots, and URLs, keep
+    # passing: the wider rule must not refuse every Windows path.
+    separator = "\\"
+    accepted = (
+        separator.join(["C:", "Projects", "public-demo", "build"]),
+        separator * 2 + separator.join(["fileserver", "share", "public-notes.md"]),
+        "https://example.com/report",
+    )
+    for public_ref in accepted:
+        build_periodic_report_run(_request_with_snapshot_ref(public_ref))
+
+
 def test_periodic_report_cli_composes_json(tmp_path, capsys) -> None:
     request_path = tmp_path / "request.json"
     request_path.write_text(json.dumps(_request()), encoding="utf-8")
@@ -235,6 +277,32 @@ def test_periodic_report_cli_composes_json(tmp_path, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["schema_version"] == "periodic_report_v0"
     assert payload["run_state"]["status"] == "pending"
+
+
+def test_periodic_report_cli_refuses_native_windows_private_path(tmp_path, capsys) -> None:
+    separator = "\\"
+    request = _request_with_snapshot_ref(
+        "C:" + separator + separator.join(["Users", "example-user", "notes.md"])
+    )
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+
+    assert (
+        main(
+            [
+                "--format",
+                "json",
+                "periodic-report",
+                "compose-run",
+                "--request-json",
+                str(request_path),
+            ]
+        )
+        == 1
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert "private path or credential-like value" in payload["error"]
 
 
 class _MeteredStdin(io.StringIO):

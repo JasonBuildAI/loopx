@@ -153,6 +153,9 @@ uv run --extra test python -m benchmark.edgebench.export_report \
   --verify benchmark/edgebench/studies/portfolio-ten-arm-20261006/data
 ```
 
+`.gitattributes` pins this archive to LF line endings, so the recorded digests
+verify even when Git checks out other text files with `core.autocrlf=true`.
+
 For another terminal collection, supply an explicit JSON list of
 `{"row": <canonical board row>, "settings": <reviewed supplemental settings>}`
 and run the same module with `--runs-root`, `--selection`, `--output` and

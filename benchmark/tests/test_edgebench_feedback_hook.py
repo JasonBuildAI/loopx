@@ -8,6 +8,8 @@ from threading import Event, current_thread
 
 import pytest
 
+pytest.importorskip("fcntl", reason="delivery serializes its session reader with POSIX flock")
+
 from benchmark.edgebench.feedback_hook import deliver, install
 from benchmark.edgebench import feedback_hook
 
@@ -159,3 +161,11 @@ def test_installer_preserves_official_stop_and_is_idempotent(tmp_path):
     assert tmp_path.stat().st_mode & 0o777 == 0o755
     assert script.stat().st_mode & 0o777 == 0o644
     assert (tmp_path / 'hooks.json').stat().st_mode & 0o777 == 0o644
+
+
+def test_delivery_refuses_a_host_without_the_posix_session_lock(tmp_path, monkeypatch):
+    monkeypatch.setattr(feedback_hook, 'fcntl', None)
+    receipts = tmp_path / 'receipts'
+    with pytest.raises(OSError, match='session-lock backend'):
+        deliver({'session_id': 'test', 'hook_event_name': 'PostToolUse'}, tmp_path, receipts)
+    assert not receipts.exists()

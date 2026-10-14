@@ -9,6 +9,7 @@ import json
 import pytest
 
 from loopx.cli import main as cli_main
+from loopx.cli_commands.agent_directory import render_agent_directory
 from loopx.control_plane.agents.management_projection import (
     build_agent_management_projection,
     projected_agent_goals,
@@ -174,14 +175,14 @@ def test_truncated_directory_declares_the_rows_it_omitted() -> None:
 
     packet = build_peer_agent_directory(_status_payload(registered))
 
-    # The projection's registered count is the union of declared registrations
-    # and the Agents that claim projected work, so the invariant is checked
-    # against that count rather than the fixture list.
-    assert packet["registered_agent_count"] > len(registered)
+    # The fixture's Todo claimants are not registered Agents of this Goal, so
+    # they are published as diagnostic rows and never join the registered total.
+    assert packet["registered_agent_count"] == len(registered)
+    assert packet["diagnostic_agent_count"] == 2
     assert packet["row_count"] == MAX_DIRECTORY_ROWS
     assert (
         packet["row_count"] + packet["omitted_row_count"]
-        == packet["registered_agent_count"]
+        == packet["registered_agent_count"] + packet["diagnostic_agent_count"]
     )
     assert packet["omitted_row_count"] > 0
     assert LIMITATION_ROWS_TRUNCATED in packet["limitations"]  # type: ignore[operator]
@@ -206,7 +207,10 @@ def test_projection_pages_past_its_display_cap_and_reports_the_page_span() -> No
     assert page["source_summary"]["selected_agent_count"] == (
         len(expected_order) - MAX_DIRECTORY_ROWS
     )
-    assert page["source_summary"]["registered_agent_count"] == len(expected_order)
+    # Whole-Goal counts: paging moves neither the registrations nor the
+    # diagnostic rows the projection carries beside them.
+    assert page["source_summary"]["registered_agent_count"] == len(registered)
+    assert page["source_summary"]["diagnostic_agent_count"] == 2
 
 
 def test_capped_directory_completes_by_following_next_cursor() -> None:
@@ -311,7 +315,20 @@ def test_a_claim_that_outlived_its_registration_cannot_admit_its_claimant() -> N
 def test_a_retained_claim_row_is_not_marked_as_a_registered_member() -> None:
     """Diagnostic claim rows stay visible; registration stays the registry's."""
 
-    payload = _status_payload()
+    payload = _payload_with_a_retained_claim([WORKING_AGENT, IDLE_AGENT, STALE_AGENT])
+
+    packet = build_peer_agent_directory(payload, caller_agent_id=WORKING_AGENT)
+    rows = _rows_by_agent(packet)
+
+    assert rows["zz-unregistered"]["registered"] is False
+    assert rows["zz-unregistered"]["work"]["todo_id"] == "todo_directory_retained_claim"  # type: ignore[index]
+    assert rows[IDLE_AGENT]["registered"] is True
+
+
+def _payload_with_a_retained_claim(registered: list[str]) -> dict[str, object]:
+    """A Goal registry plus one Todo claim whose Agent it never registered."""
+
+    payload = _status_payload(registered)
     payload["todo_index"]["items"].append(
         {
             "role": "agent",
@@ -325,13 +342,84 @@ def test_a_retained_claim_row_is_not_marked_as_a_registered_member() -> None:
             "text": "A claim whose Agent the Goal does not register.",
         }
     )
+    return payload
 
-    packet = build_peer_agent_directory(payload, caller_agent_id=WORKING_AGENT)
-    rows = _rows_by_agent(packet)
 
-    assert rows["zz-unregistered"]["registered"] is False
-    assert rows["zz-unregistered"]["work"]["todo_id"] == "todo_directory_retained_claim"  # type: ignore[index]
-    assert rows[IDLE_AGENT]["registered"] is True
+def test_a_retained_claim_never_grows_the_registered_total() -> None:
+    """30 registered Agents plus one retained claim: the totals stay true."""
+
+    registered = [f"agent-{index:02d}" for index in range(28)]
+    registered.extend([WORKING_AGENT, STALE_AGENT])
+    payload = _payload_with_a_retained_claim(registered)
+    source_order = sorted({*registered, "zz-unregistered"})
+    late_registered = registered[-1]
+
+    first = build_peer_agent_directory(payload, caller_agent_id=late_registered)
+    first_ids = [row["agent_id"] for row in first["rows"]]
+    assert first_ids == source_order[:MAX_DIRECTORY_ROWS]
+    # The claimant is carried, never counted: 30 registrations stay 30.
+    assert first["registered_agent_count"] == len(registered)
+    assert first["diagnostic_agent_count"] == 1
+    assert first["row_count"] + first["omitted_row_count"] == (
+        first["registered_agent_count"] + first["diagnostic_agent_count"]
+    )
+    assert first["next_cursor"] == source_order[MAX_DIRECTORY_ROWS - 1]
+
+    last = build_peer_agent_directory(
+        payload, caller_agent_id=late_registered, cursor=first["next_cursor"]
+    )
+    last_ids = [row["agent_id"] for row in last["rows"]]
+    assert last_ids == source_order[MAX_DIRECTORY_ROWS:]
+    assert last["next_cursor"] is None
+    assert last["registered_agent_count"] == len(registered)
+    assert last["diagnostic_agent_count"] == 1
+    assert last["row_count"] + last["omitted_row_count"] == (
+        last["registered_agent_count"] + last["diagnostic_agent_count"]
+    )
+    assert _rows_by_agent(last)["zz-unregistered"]["registered"] is False
+    assert len(first_ids + last_ids) == len(set(first_ids + last_ids))
+    # A registered caller sorting past the first page keeps its scope there.
+    assert first["scope"]["gaps"] == []  # type: ignore[index]
+    assert last["scope"]["gaps"] == []  # type: ignore[index]
+    assert last["scope"]["caller_membership"] == "registered_agent"  # type: ignore[index]
+
+    # A page past the end still declares the Goal instead of erasing it.
+    empty = build_peer_agent_directory(
+        payload, caller_agent_id=late_registered, cursor="zzz-after-the-last-id"
+    )
+    assert empty["rows"] == []
+    assert empty["registered_agent_count"] == len(registered)
+    assert empty["diagnostic_agent_count"] == 1
+    assert empty["omitted_row_count"] == (
+        empty["registered_agent_count"] + empty["diagnostic_agent_count"]
+    )
+    assert LIMITATION_ROWS_TRUNCATED in empty["limitations"]  # type: ignore[operator]
+
+    # The retained claimant stays visible evidence and never a member: neither a
+    # fresh scan nor a page admits it.
+    for cursor in (None, first["next_cursor"]):
+        refused = build_peer_agent_directory(
+            payload, caller_agent_id="zz-unregistered", cursor=cursor
+        )
+        assert refused["rows"] == []
+        assert [gap["kind"] for gap in refused["scope"]["gaps"]] == [  # type: ignore[index]
+            GAP_AUDIENCE_NOT_AUTHORIZED
+        ]
+
+
+def test_rendered_directory_names_a_claimant_a_row_not_a_registered_agent() -> None:
+    packet = build_peer_agent_directory(
+        _payload_with_a_retained_claim([WORKING_AGENT, IDLE_AGENT, STALE_AGENT]),
+        caller_agent_id=WORKING_AGENT,
+    )
+
+    rendered = render_agent_directory(packet)
+
+    # Three registrations plus one diagnostic row: the header counts both kinds
+    # apart, and the row says which it is instead of reading as a member.
+    assert "4 of 4 directory rows, 3 registered Agents" in rendered
+    assert "non-member rows: 1" in rendered
+    assert "[not a registered member]" in rendered
 
 
 def test_a_page_inside_the_published_evidence_keeps_its_lease_facts() -> None:

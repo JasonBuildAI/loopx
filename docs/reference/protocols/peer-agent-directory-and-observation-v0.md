@@ -395,11 +395,11 @@ and the steward channel call one command.
 
 What it emits, and what it refuses to imply:
 
-- one bounded page of rows (at most 24), one row per registered Agent in that
-  page whether or not the Agent holds projected work, and no `presence` block
-  at all while no provider is registered; a row the projection carries only
-  for a Todo claim says `registered: false`, so a diagnostic claimant never
-  reads as a member;
+- one bounded page of rows (at most 24), one row per Agent in that page of the
+  Goal's directory order whether or not the Agent holds projected work, and no
+  `presence` block at all while no provider is registered; a row the projection
+  carries only for a Todo claim says `registered: false`, so a diagnostic
+  claimant never reads as a member and never counts as one;
 - one page of a stable agent-id order: `next_cursor` is the last id read and
   names the continuation whenever more rows follow this page, `--cursor` reads
   the page after it, and a fresh scan carries `"cursor": null`. A cursor is a
@@ -410,11 +410,18 @@ What it emits, and what it refuses to imply:
 - explicit `limitations` (`presence_provider_unavailable`,
   `presence_is_advisory`, `lease_state_not_projected`,
   `caller_identity_not_supplied`, `rows_truncated_at_cap`) together with
-  `registered_agent_count` and `omitted_row_count`, so a truncated directory
-  cannot be read as a complete one; `rows_truncated_at_cap` still marks every
-  packet that does not return all registered rows, while `next_cursor` tells a
-  reader whether those rows are reachable by continuing; the payload's own agent
-  projection is bounded too, so a page holding Agents it did not carry declares
+  `registered_agent_count`, `omitted_row_count` and, when it carries any,
+  `diagnostic_agent_count`, so a truncated directory cannot be read as a
+  complete one and no reader has to reconcile two meanings of "registered":
+  `registered_agent_count` counts the Goal's registration facts alone — the same
+  set that proves a caller's membership — while `row_count` also covers the
+  diagnostic claimant rows the page publishes; `omitted_row_count` counts the
+  rows of that order this packet did not carry, so `row_count +
+  omitted_row_count == registered_agent_count + diagnostic_agent_count`;
+  `rows_truncated_at_cap` still marks every packet that does not return all
+  rows of the Goal's directory, while `next_cursor` tells a reader whether those
+  rows are reachable by continuing; the payload's own agent projection is
+  bounded too, so a page holding Agents it did not carry declares
   `lease_state_not_projected` instead of letting their unprojected lane and
   lease state read as "no evidence";
 - a typed scope gap (`audience_not_authorized`) and zero rows when the named

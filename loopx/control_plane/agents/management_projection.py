@@ -744,9 +744,19 @@ def build_agent_management_projection(
     caller whose rows are capped at ``MAX_AGENT_ROWS`` can continue past row 24.
     The cursor is a position, not a membership claim. Without a cursor the
     projection covers the whole registry exactly as before.
+
+    ``source_summary`` separates the two kinds of row: ``registered_agent_count``
+    counts the Goal's registrations, and ``diagnostic_agent_count`` (published
+    only when it is non-zero) counts the rows this view carries for a work
+    relationship alone. A Todo claimant is evidence, never a member, so it can
+    never grow the registered total.
     """
 
     rows_by_agent = _registered_agents(status_payload)
+    # Registration facts, remembered before Todo claims add their own rows: a
+    # claim is a work relationship that can outlive a registration, so the
+    # members of this Goal stay the ids the registry proves.
+    registered_ids = set(rows_by_agent)
     material_projection_enabled = MATERIAL_LIFECYCLE_CAPABILITY in set(
         normalize_required_capabilities(available_capabilities)
     )
@@ -792,9 +802,8 @@ def build_agent_management_projection(
             continue
         selected_agent_count += 1
         if len(agents) >= MAX_AGENT_ROWS:
-            # Without a cursor the registered count already bounds the source
-            # set; with one, keep counting so a paging caller can tell whether
-            # more rows follow this page.
+            # Without a cursor this page stops at the cap; with one, keep
+            # counting so a paging caller can tell whether more rows follow.
             if page_cursor is None:
                 break
             continue
@@ -883,13 +892,18 @@ def build_agent_management_projection(
         )
 
     source_summary: dict[str, Any] = {
-        "registered_agent_count": len(rows_by_agent),
+        "registered_agent_count": len(registered_ids),
         "projected_agent_count": len(agents),
         "todo_source": (
             "status.attention_queue + authoritative status.todo_index rows; "
             "event-only rollout receipts are evidence, not runtime work"
         ),
     }
+    diagnostic_agent_count = len(rows_by_agent) - len(registered_ids)
+    if diagnostic_agent_count:
+        # Rows carried only for a work relationship: visible evidence, never
+        # members, so a retained claim cannot grow the Goal's Agent total.
+        source_summary["diagnostic_agent_count"] = diagnostic_agent_count
     if page_cursor is not None:
         # The span this page reads, not the whole Goal: `registered_agent_count`
         # still counts every registered Agent, so a paging caller can separate

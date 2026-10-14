@@ -161,6 +161,7 @@ def test_receipt_bound_trae_hint_executes_native_without_python(
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=env,
     )
 
@@ -225,6 +226,7 @@ def test_receipt_bound_failure_hint_executes_native_without_python(
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=env,
     )
 

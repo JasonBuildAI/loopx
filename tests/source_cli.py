@@ -41,7 +41,9 @@ def source_cli_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
     """Build the launcher environment; Windows needs the release root."""
     env = dict(os.environ if base is None else base)
     if os.name == "nt":
-        env.setdefault("LOOPX_RELEASE_ROOT", str(REPO_ROOT))
+        # The shipped launchers pin the release root instead of inheriting an
+        # ambient value; mirror that so a stale root cannot redirect the run.
+        env["LOOPX_RELEASE_ROOT"] = str(REPO_ROOT)
     return env
 
 

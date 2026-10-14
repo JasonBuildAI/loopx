@@ -383,7 +383,7 @@ is omitted, and delivery remains available through the durable hand-off path.
 ### Local producer (shipped)
 
 The first producer is `loopx agent-directory --goal-id <goal> [--agent-id
-<caller>]` (`loopx/cli_commands/agent_directory.py` over
+<caller>] [--cursor <agent-id>]` (`loopx/cli_commands/agent_directory.py` over
 `loopx/control_plane/agents/directory.py`). It reads the Goal's existing agent
 management projection, so identity, work, claims and staleness keep their
 current owners and the packet adds no second read of the registry or a lease
@@ -392,13 +392,22 @@ and the steward channel call one command.
 
 What it emits, and what it refuses to imply:
 
-- one row per registered Agent, whether or not that Agent holds projected work,
-  and no `presence` block at all while no provider is registered;
+- one bounded page of rows (at most 24), one row per registered Agent in that
+  page whether or not the Agent holds projected work, and no `presence` block
+  at all while no provider is registered;
+- one page of a stable agent-id order: `next_cursor` is the last id read and
+  names the continuation whenever more rows follow this page, `--cursor` reads
+  the page after it, and a fresh scan carries `"cursor": null`. A cursor is a
+  position in that order, not a claim that the id is still registered; caller
+  membership is checked against every registered Agent, never only the page, so
+  paging cannot deny a registered caller their scope;
 - explicit `limitations` (`presence_provider_unavailable`,
   `presence_is_advisory`, `lease_state_not_projected`,
   `caller_identity_not_supplied`, `rows_truncated_at_cap`) together with
   `registered_agent_count` and `omitted_row_count`, so a truncated directory
-  cannot be read as a complete one;
+  cannot be read as a complete one; `rows_truncated_at_cap` still marks every
+  packet that does not return all registered rows, while `next_cursor` tells a
+  reader whether those rows are reachable by continuing;
 - a typed scope gap (`audience_not_authorized`) and zero rows when the named
   caller is not a registered Agent of the Goal, instead of a listing that caller
   has no scope over;

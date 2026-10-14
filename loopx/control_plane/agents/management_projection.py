@@ -236,6 +236,24 @@ def projected_agent_goals(
     return goals
 
 
+def projected_agent_ids(status_payload: dict[str, Any]) -> set[str]:
+    """Return every Agent id this projection rows, ignoring the display cap.
+
+    ``MAX_AGENT_ROWS`` bounds the published ``agents`` list; scope questions
+    such as "is this caller a registered Agent of the Goal?" must not inherit
+    that cap, so they read this full set instead of the truncated rows. The set
+    is the same registry-plus-claimant union the projection rows, so the two
+    answers cannot disagree.
+    """
+
+    agent_ids = set(_registered_agents(status_payload))
+    for todo in _iter_status_todos(status_payload):
+        agent_id = _todo_agent_id(todo)
+        if agent_id:
+            agent_ids.add(agent_id)
+    return agent_ids
+
+
 def _agent_material_frontiers(
     status_payload: dict[str, Any],
 ) -> dict[tuple[str, str], dict[str, Any]]:
@@ -712,6 +730,7 @@ def build_agent_management_projection(
     *,
     available_capabilities: Any = None,
     execution_facts: Any = None,
+    after_agent_id: str | None = None,
 ) -> dict[str, Any]:
     """Build a read-only agent management view from a status payload.
 
@@ -723,6 +742,12 @@ def build_agent_management_projection(
     reads (Turn lane liveness, delegation worker lock, task lease). Without them
     no row can be `executing` or `unknown`: the projection then says what the
     durable state proves and nothing more.
+
+    ``after_agent_id`` selects one page of the projection's stable agent-id
+    ordering: only Agents sorting strictly after it become the source set, so a
+    caller whose rows are capped at ``MAX_AGENT_ROWS`` can continue past row 24.
+    The cursor is a position, not a membership claim. Without a cursor the
+    projection covers the whole registry exactly as before.
     """
 
     rows_by_agent = _registered_agents(status_payload)
@@ -762,8 +787,21 @@ def build_agent_management_projection(
             row["_goal_ids"].append(goal_id)
         row["_todos"].append(todo)
 
+    page_cursor = str(after_agent_id).strip() if after_agent_id else None
+
     agents: list[dict[str, Any]] = []
+    selected_agent_count = 0
     for agent_id, raw_row in sorted(rows_by_agent.items()):
+        if page_cursor is not None and agent_id <= page_cursor:
+            continue
+        selected_agent_count += 1
+        if len(agents) >= MAX_AGENT_ROWS:
+            # Without a cursor the registered count already bounds the source
+            # set; with one, keep counting so a paging caller can tell whether
+            # more rows follow this page.
+            if page_cursor is None:
+                break
+            continue
         all_todos = _as_list(raw_row.get("_todos"))
         current = _select_current_todo(all_todos)
         blocked = _select_blocked_todo(all_todos)
@@ -847,8 +885,6 @@ def build_agent_management_projection(
                 if value not in (None, "", [], {})
             }
         )
-        if len(agents) >= MAX_AGENT_ROWS:
-            break
 
     source_summary: dict[str, Any] = {
         "registered_agent_count": len(rows_by_agent),
@@ -858,6 +894,11 @@ def build_agent_management_projection(
             "event-only rollout receipts are evidence, not runtime work"
         ),
     }
+    if page_cursor is not None:
+        # The span this page reads, not the whole Goal: `registered_agent_count`
+        # still counts every registered Agent, so a paging caller can separate
+        # rows before the cursor from rows this page could not carry.
+        source_summary["selected_agent_count"] = selected_agent_count
     if material_frontiers:
         source_summary["material_frontier_count"] = len(material_frontiers)
     if isinstance(execution_facts, dict):

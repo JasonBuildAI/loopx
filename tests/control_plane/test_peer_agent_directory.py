@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
+
 import pytest
 
+from loopx.cli import main as cli_main
 from loopx.control_plane.agents.management_projection import (
     build_agent_management_projection,
     projected_agent_goals,
+    projected_agent_ids,
 )
 from loopx.control_plane.agents.directory import (
     GAP_AUDIENCE_NOT_AUTHORIZED,
@@ -161,6 +167,167 @@ def test_truncated_directory_declares_the_rows_it_omitted() -> None:
     )
     assert packet["omitted_row_count"] > 0
     assert LIMITATION_ROWS_TRUNCATED in packet["limitations"]  # type: ignore[operator]
+
+
+def test_projection_pages_past_its_display_cap_and_reports_the_page_span() -> None:
+    """The cap bounds the published rows, never the registry a caller may read."""
+
+    registered = [f"agent-{index:02d}" for index in range(MAX_DIRECTORY_ROWS + 4)]
+    payload = _status_payload(registered)
+    expected_order = sorted(set(registered) | {WORKING_AGENT, STALE_AGENT})
+    cursor = expected_order[MAX_DIRECTORY_ROWS - 1]
+
+    full = build_agent_management_projection(payload)
+    assert len(full["agents"]) == MAX_DIRECTORY_ROWS
+    # The full set is what scope questions read; only the rows are capped.
+    assert projected_agent_ids(payload) == set(expected_order)
+    assert "selected_agent_count" not in full["source_summary"]
+
+    page = build_agent_management_projection(payload, after_agent_id=cursor)
+    assert [row["agent_id"] for row in page["agents"]] == expected_order[MAX_DIRECTORY_ROWS:]
+    assert page["source_summary"]["selected_agent_count"] == (
+        len(expected_order) - MAX_DIRECTORY_ROWS
+    )
+    assert page["source_summary"]["registered_agent_count"] == len(expected_order)
+
+
+def test_capped_directory_completes_by_following_next_cursor() -> None:
+    registered = [f"agent-{index:02d}" for index in range(MAX_DIRECTORY_ROWS + 4)]
+    payload = _status_payload(registered)
+    expected_order = sorted(set(registered) | {WORKING_AGENT, STALE_AGENT})
+
+    first = build_peer_agent_directory(payload, caller_agent_id=WORKING_AGENT)
+    first_ids = [row["agent_id"] for row in first["rows"]]
+    assert first_ids == expected_order[:MAX_DIRECTORY_ROWS]
+    assert first["cursor"] is None
+    assert first["next_cursor"] == expected_order[MAX_DIRECTORY_ROWS - 1]
+    assert (
+        first["row_count"] + first["omitted_row_count"]
+        == first["registered_agent_count"]
+    )
+
+    second = build_peer_agent_directory(
+        payload, caller_agent_id=WORKING_AGENT, cursor=first["next_cursor"]
+    )
+    second_ids = [row["agent_id"] for row in second["rows"]]
+    assert second["cursor"] == first["next_cursor"]
+    assert second_ids == expected_order[MAX_DIRECTORY_ROWS:]
+    assert second["next_cursor"] is None
+    assert len(first_ids + second_ids) == len(set(first_ids + second_ids))
+    assert len(first_ids + second_ids) == first["registered_agent_count"]
+    assert (
+        second["row_count"] + second["omitted_row_count"]
+        == second["registered_agent_count"]
+    )
+
+
+def test_registered_caller_beyond_the_first_page_keeps_its_scope() -> None:
+    """Membership is the registry, not the page: the cap cannot deny a caller."""
+
+    registered = [f"agent-{index:02d}" for index in range(MAX_DIRECTORY_ROWS + 1)]
+    payload = _status_payload(registered)
+    expected_order = sorted(set(registered) | {WORKING_AGENT, STALE_AGENT})
+
+    beyond = build_peer_agent_directory(
+        payload, caller_agent_id=expected_order[MAX_DIRECTORY_ROWS]
+    )
+    assert beyond["scope"]["gaps"] == []  # type: ignore[index]
+    assert beyond["scope"]["caller_membership"] == "registered_agent"  # type: ignore[index]
+
+    # A caller placed before the cursor is not on the page it reads, and still
+    # must not be told it is unregistered.
+    later = build_peer_agent_directory(
+        payload,
+        caller_agent_id="agent-00",
+        cursor=expected_order[MAX_DIRECTORY_ROWS - 1],
+    )
+    assert later["scope"]["gaps"] == []  # type: ignore[index]
+    assert "agent-00" not in [row["agent_id"] for row in later["rows"]]
+
+
+def test_cursor_is_a_position_and_an_empty_page_is_declared_not_erased() -> None:
+    payload = _status_payload()
+
+    positioned = build_peer_agent_directory(
+        payload, caller_agent_id=WORKING_AGENT, cursor="agent-j"
+    )
+    assert [row["agent_id"] for row in positioned["rows"]] == [
+        STALE_AGENT,
+        WORKING_AGENT,
+    ]
+    assert positioned["cursor"] == "agent-j"
+    assert positioned["next_cursor"] is None
+    assert positioned["scope"]["gaps"] == []  # type: ignore[index]
+
+    beyond = build_peer_agent_directory(
+        payload, caller_agent_id=WORKING_AGENT, cursor="zzz-after-the-last-id"
+    )
+    assert beyond["rows"] == []
+    assert beyond["row_count"] == 0
+    assert beyond["cursor"] == "zzz-after-the-last-id"
+    assert beyond["next_cursor"] is None
+    assert beyond["scope"]["gaps"] == []  # type: ignore[index]
+    assert beyond["registered_agent_count"] == 3
+    assert LIMITATION_ROWS_TRUNCATED in beyond["limitations"]  # type: ignore[operator]
+
+
+def test_a_cursor_that_cannot_be_published_is_rejected_not_echoed() -> None:
+    with pytest.raises(ValueError):
+        build_peer_agent_directory(
+            _status_payload(),
+            cursor="ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz1234",
+        )
+
+
+def test_cli_agent_directory_continues_with_cursor(tmp_path) -> None:
+    registered = [f"agent-{index:02d}" for index in range(MAX_DIRECTORY_ROWS + 4)]
+    registry = tmp_path / "registry.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "schema_version": "0.1",
+                "goals": [
+                    {"id": GOAL_ID, "coordination": {"registered_agents": registered}}
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def run(*extra: str) -> dict[str, object]:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exit_code = cli_main(
+                [
+                    "--registry",
+                    str(registry),
+                    "--format",
+                    "json",
+                    "agent-directory",
+                    "--goal-id",
+                    GOAL_ID,
+                    "--agent-id",
+                    registered[0],
+                    "--scan-path",
+                    str(tmp_path),
+                    *extra,
+                ]
+            )
+        assert exit_code == 0
+        return json.loads(output.getvalue())
+
+    first = run()
+    assert first["row_count"] == MAX_DIRECTORY_ROWS
+    assert first["next_cursor"]
+
+    second = run("--cursor", str(first["next_cursor"]))
+    ids = [row["agent_id"] for row in first["rows"]] + [  # type: ignore[index]
+        row["agent_id"] for row in second["rows"]  # type: ignore[index]
+    ]
+    assert sorted(ids) == registered
+    assert len(ids) == len(set(ids))
+    assert second["next_cursor"] is None
 
 
 def test_rows_report_a_peer_route_without_selecting_one() -> None:

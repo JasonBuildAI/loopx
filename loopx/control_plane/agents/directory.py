@@ -30,7 +30,7 @@ from ..runtime.time import now_utc_iso
 from ...thread_agent_binding import summarize_agent_binding_routes
 from ..runtime.public_safety import validate_public_safe_value
 from ..todos.contract import normalize_todo_id
-from .management_projection import build_agent_management_projection
+from .management_projection import build_agent_management_projection, projected_agent_ids
 
 
 PEER_AGENT_DIRECTORY_SCHEMA_VERSION = "peer_agent_directory_v0"
@@ -201,6 +201,7 @@ def build_peer_agent_directory(
     caller_agent_id: str | None = None,
     available_capabilities: Any = None,
     execution_facts: Any = None,
+    cursor: str | None = None,
 ) -> dict[str, Any]:
     """Return a bounded `peer_agent_directory_v0` packet for one Goal.
 
@@ -213,25 +214,33 @@ def build_peer_agent_directory(
     `execution_facts` defaults to the facts the payload's management projection
     already carries on its rows, so this re-projection reads the same lane,
     worker and lease facts status collection did instead of reading them again.
+
+    `cursor` continues a previous page: rows follow the projection's agent-id
+    ordering and the cursor is the last id already read, so only Agents sorting
+    strictly after it are returned and `next_cursor` names the following page.
+    The default starts a fresh scan. Membership is checked against every
+    registered Agent, not only the page, so paging cannot deny a registered
+    caller their scope.
     """
 
     payload = status_payload if isinstance(status_payload, Mapping) else {}
     resolved_goal = _compact(goal_id or payload.get("goal_filter"), limit=120)
     caller = _compact(caller_agent_id, limit=120)
+    cursor_value = _compact(cursor, limit=120)
+    if cursor and not cursor_value:
+        raise ValueError("cursor is not a publishable agent id")
     if execution_facts is None:
         execution_facts = _projected_execution_facts(payload)
     facts = execution_facts if isinstance(execution_facts, Mapping) else None
+    status = dict(payload)
     projection = build_agent_management_projection(
-        dict(payload),
+        status,
         available_capabilities=available_capabilities,
         execution_facts=dict(facts) if facts is not None else None,
+        after_agent_id=cursor_value,
     )
     agent_rows = [row for row in _as_list(projection.get("agents")) if isinstance(row, Mapping)]
-    registered_agent_ids = [
-        agent_id
-        for agent_id in (_compact(row.get("agent_id"), limit=120) for row in agent_rows)
-        if agent_id
-    ]
+    registered_agent_ids = projected_agent_ids(status)
 
     limitations = [
         LIMITATION_PRESENCE_PROVIDER_UNAVAILABLE,
@@ -308,6 +317,18 @@ def build_peer_agent_directory(
     if withheld_route_candidates:
         limitations.append(LIMITATION_ROUTE_CANDIDATE_WITHHELD)
 
+    # A page can end before the registry does. `next_cursor` is the last id
+    # read, so the same agent-id ordering continues from exactly there instead
+    # of the 25th and later registered Agents becoming unreachable.
+    selected_count = source_summary.get("selected_agent_count")
+    more_rows_follow = False
+    if rows and not gaps:
+        if isinstance(selected_count, int):
+            more_rows_follow = selected_count > len(rows)
+        elif cursor_value is None and isinstance(registered_count, int):
+            more_rows_follow = registered_count > len(rows)
+    next_cursor = str(rows[-1]["agent_id"]) if more_rows_follow else None
+
     packet: dict[str, Any] = {
         "ok": True,
         "schema_version": PEER_AGENT_DIRECTORY_SCHEMA_VERSION,
@@ -332,6 +353,8 @@ def build_peer_agent_directory(
         "registered_agent_count": (
             int(registered_count) if isinstance(registered_count, int) else len(rows)
         ),
+        "cursor": cursor_value,
+        "next_cursor": next_cursor,
         "presence_coverage": {
             "provider": None,
             "state": "unavailable",

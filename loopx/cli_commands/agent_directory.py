@@ -37,6 +37,15 @@ def register_agent_directory(subparsers, add_format):
         default=[],
         help="Project root to scan for Goal state; defaults to the current directory.",
     )
+    parser.add_argument(
+        "--cursor",
+        default=None,
+        help=(
+            "Continue a previous scan after this Agent id (the previous "
+            "packet's next_cursor); rows follow agent-id order. Omit to start "
+            "a fresh scan of all registered Agents."
+        ),
+    )
 
 
 def handle_agent_directory(args, registry_path, runtime_root, print_payload, output_format):
@@ -67,6 +76,7 @@ def handle_agent_directory(args, registry_path, runtime_root, print_payload, out
             status_payload,
             goal_id=args.goal_id,
             caller_agent_id=args.agent_id,
+            cursor=args.cursor,
         )
     except (ValueError, TypeError, OSError, KeyError, EffectRuntimeRemoteError) as exc:
         payload = {
@@ -87,6 +97,13 @@ def render_agent_directory(payload):
         f"Peer agent directory: {payload.get('goal_id')} "
         f"({payload.get('row_count')} of {payload.get('row_count', 0) + payload.get('omitted_row_count', 0)} registered Agents)"
     ]
+    if payload.get("cursor"):
+        lines.append(f"page: rows after {payload['cursor']} (agent id order, exclusive)")
+    if payload.get("next_cursor"):
+        lines.append(
+            f"continuation: rerun with --cursor {payload['next_cursor']} "
+            "for the remaining registered Agents"
+        )
     scope = payload.get("scope") or {}
     lines.append(
         f"caller: {scope.get('caller_agent_id') or '(not supplied)'} "

@@ -246,7 +246,13 @@ def build_peer_agent_directory(
         LIMITATION_PRESENCE_PROVIDER_UNAVAILABLE,
         LIMITATION_PRESENCE_IS_ADVISORY,
     ]
-    if facts is None:
+    # The payload's published projection is itself bounded, so a page can hold
+    # Agents whose lane and lease evidence was never published. Declare that
+    # instead of letting those rows read as "no lease evidence".
+    facts_missing_for_page = facts is not None and any(
+        str(row.get("agent_id") or "").strip() not in facts for row in agent_rows
+    )
+    if facts is None or facts_missing_for_page:
         limitations.append(LIMITATION_LEASE_STATE_NOT_PROJECTED)
     gaps: list[dict[str, Any]] = []
     if caller and caller not in registered_agent_ids:

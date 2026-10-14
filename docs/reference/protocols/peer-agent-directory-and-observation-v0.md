@@ -407,7 +407,10 @@ What it emits, and what it refuses to imply:
   `registered_agent_count` and `omitted_row_count`, so a truncated directory
   cannot be read as a complete one; `rows_truncated_at_cap` still marks every
   packet that does not return all registered rows, while `next_cursor` tells a
-  reader whether those rows are reachable by continuing;
+  reader whether those rows are reachable by continuing; the payload's own agent
+  projection is bounded too, so a page holding Agents it did not carry declares
+  `lease_state_not_projected` instead of letting their unprojected lane and
+  lease state read as "no evidence";
 - a typed scope gap (`audience_not_authorized`) and zero rows when the named
   caller is not a registered Agent of the Goal, instead of a listing that caller
   has no scope over;

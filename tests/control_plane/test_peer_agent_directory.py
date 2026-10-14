@@ -85,6 +85,24 @@ def _rows_by_agent(packet: dict[str, object]) -> dict[str, dict[str, object]]:
     return {str(row["agent_id"]): row for row in packet["rows"]}  # type: ignore[index]
 
 
+def _payload_with_published_evidence(agent_ids: list[str]) -> dict[str, object]:
+    """A payload whose capped projection published lane/lease evidence rows."""
+
+    payload = _status_payload(agent_ids)
+    order = sorted(set(agent_ids) | {WORKING_AGENT, STALE_AGENT})
+    payload["agent_management_projection"] = {
+        "agents": [
+            {
+                "agent_id": agent_id,
+                "execution": {"lane": "live", "lease": {"status": "active"}},
+            }
+            for agent_id in order[:MAX_DIRECTORY_ROWS]
+        ],
+        "source_summary": {"execution_facts_collected": True},
+    }
+    return payload
+
+
 def test_directory_reports_registered_agents_without_inventing_presence() -> None:
     packet = build_peer_agent_directory(_status_payload(), caller_agent_id=WORKING_AGENT)
 
@@ -243,6 +261,36 @@ def test_registered_caller_beyond_the_first_page_keeps_its_scope() -> None:
     )
     assert later["scope"]["gaps"] == []  # type: ignore[index]
     assert "agent-00" not in [row["agent_id"] for row in later["rows"]]
+
+
+def test_a_page_inside_the_published_evidence_keeps_its_lease_facts() -> None:
+    payload = _payload_with_published_evidence([WORKING_AGENT, IDLE_AGENT, STALE_AGENT])
+
+    packet = build_peer_agent_directory(
+        payload, caller_agent_id=WORKING_AGENT, cursor="agent-idle"
+    )
+
+    assert LIMITATION_LEASE_STATE_NOT_PROJECTED not in packet["limitations"]  # type: ignore[operator]
+    assert (
+        _rows_by_agent(packet)[WORKING_AGENT]["work"]["lease_status"]  # type: ignore[index]
+        == "active"
+    )
+
+
+def test_a_page_beyond_the_published_evidence_declares_lease_state_not_projected() -> None:
+    """The payload's projection is capped too; a later page must say so."""
+
+    registered = [f"agent-{index:02d}" for index in range(MAX_DIRECTORY_ROWS + 4)]
+    payload = _payload_with_published_evidence(registered)
+
+    first = build_peer_agent_directory(payload, caller_agent_id=WORKING_AGENT)
+    assert LIMITATION_LEASE_STATE_NOT_PROJECTED not in first["limitations"]  # type: ignore[operator]
+
+    beyond = build_peer_agent_directory(
+        payload, caller_agent_id=WORKING_AGENT, cursor=first["next_cursor"]
+    )
+    assert beyond["rows"]
+    assert LIMITATION_LEASE_STATE_NOT_PROJECTED in beyond["limitations"]  # type: ignore[operator]
 
 
 def test_cursor_is_a_position_and_an_empty_page_is_declared_not_erased() -> None:

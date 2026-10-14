@@ -131,6 +131,9 @@ an identity.
 Rules:
 
 - a row exists per registered Agent of the Goal, whether or not it is running;
+  `registered` is the Goal registry's answer for the row, so a diagnostic
+  claimant row a producer also carries says `false` and cannot read as a
+  member;
 - `peer_route` summarizes the thread bindings already published for that Agent as
   `{schema_version, agent_id, outcome, address_shared, candidate_count, candidates,
   scope, provenance}`. `outcome` describes only what this walk can prove:
@@ -394,13 +397,16 @@ What it emits, and what it refuses to imply:
 
 - one bounded page of rows (at most 24), one row per registered Agent in that
   page whether or not the Agent holds projected work, and no `presence` block
-  at all while no provider is registered;
+  at all while no provider is registered; a row the projection carries only
+  for a Todo claim says `registered: false`, so a diagnostic claimant never
+  reads as a member;
 - one page of a stable agent-id order: `next_cursor` is the last id read and
   names the continuation whenever more rows follow this page, `--cursor` reads
   the page after it, and a fresh scan carries `"cursor": null`. A cursor is a
-  position in that order, not a claim that the id is still registered; caller
-  membership is checked against every registered Agent, never only the page, so
-  paging cannot deny a registered caller their scope;
+  position in that order, not a claim that the id is still registered. Caller
+  membership is proven by the Goal's registration facts, never by a page and
+  never by a Todo claim: a claim that outlived its registration cannot admit
+  its claimant, and paging cannot deny a registered caller their scope;
 - explicit `limitations` (`presence_provider_unavailable`,
   `presence_is_advisory`, `lease_state_not_projected`,
   `caller_identity_not_supplied`, `rows_truncated_at_cap`) together with

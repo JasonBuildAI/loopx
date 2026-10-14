@@ -30,7 +30,10 @@ from ..runtime.time import now_utc_iso
 from ...thread_agent_binding import summarize_agent_binding_routes
 from ..runtime.public_safety import validate_public_safe_value
 from ..todos.contract import normalize_todo_id
-from .management_projection import build_agent_management_projection, projected_agent_ids
+from .management_projection import (
+    build_agent_management_projection,
+    registered_agent_ids,
+)
 
 
 PEER_AGENT_DIRECTORY_SCHEMA_VERSION = "peer_agent_directory_v0"
@@ -218,9 +221,10 @@ def build_peer_agent_directory(
     `cursor` continues a previous page: rows follow the projection's agent-id
     ordering and the cursor is the last id already read, so only Agents sorting
     strictly after it are returned and `next_cursor` names the following page.
-    The default starts a fresh scan. Membership is checked against every
-    registered Agent, not only the page, so paging cannot deny a registered
-    caller their scope.
+    The default starts a fresh scan. Membership is proven by the Goal's
+    registration facts, never by the page and never by a Todo claim: paging
+    cannot deny a registered caller their scope, and a claim that outlived its
+    registration cannot admit a caller the Goal never registered.
     """
 
     payload = status_payload if isinstance(status_payload, Mapping) else {}
@@ -240,7 +244,7 @@ def build_peer_agent_directory(
         after_agent_id=cursor_value,
     )
     agent_rows = [row for row in _as_list(projection.get("agents")) if isinstance(row, Mapping)]
-    registered_agent_ids = projected_agent_ids(status)
+    registered_ids = registered_agent_ids(status)
 
     limitations = [
         LIMITATION_PRESENCE_PROVIDER_UNAVAILABLE,
@@ -255,7 +259,7 @@ def build_peer_agent_directory(
     if facts is None or facts_missing_for_page:
         limitations.append(LIMITATION_LEASE_STATE_NOT_PROJECTED)
     gaps: list[dict[str, Any]] = []
-    if caller and caller not in registered_agent_ids:
+    if caller and caller not in registered_ids:
         # An unregistered caller gets a scope gap, never a listing it has no
         # scope over, and never a silent empty directory either.
         gaps.append(
@@ -290,7 +294,7 @@ def build_peer_agent_directory(
         withheld_route_candidates += withheld_candidates
         directory_row: dict[str, Any] = {
             "agent_id": agent_id,
-            "registered": True,
+            "registered": agent_id in registered_ids,
             "agent_model": _compact(row.get("agent_model"), limit=60),
             "work": work,
             "observation_refs": _compact_refs(
@@ -345,7 +349,7 @@ def build_peer_agent_directory(
             "caller_agent_id": caller,
             "caller_membership": (
                 "registered_agent"
-                if caller and caller in registered_agent_ids
+                if caller and caller in registered_ids
                 else "unregistered_agent"
                 if caller
                 else "local_surface"

@@ -236,22 +236,18 @@ def projected_agent_goals(
     return goals
 
 
-def projected_agent_ids(status_payload: dict[str, Any]) -> set[str]:
-    """Return every Agent id this projection rows, ignoring the display cap.
+def registered_agent_ids(status_payload: dict[str, Any]) -> set[str]:
+    """Return the registered Agent ids, ignoring the display cap.
 
-    ``MAX_AGENT_ROWS`` bounds the published ``agents`` list; scope questions
+    ``MAX_AGENT_ROWS`` bounds the published ``agents`` list; a scope question
     such as "is this caller a registered Agent of the Goal?" must not inherit
-    that cap, so they read this full set instead of the truncated rows. The set
-    is the same registry-plus-claimant union the projection rows, so the two
-    answers cannot disagree.
+    that cap, so it reads this full set instead of the truncated rows. Only
+    ``coordination.registered_agents`` proves registration here: a Todo claim
+    is a work relationship that can outlive the registration, so claimant ids
+    the diagnostic rows carry are not members of this set.
     """
 
-    agent_ids = set(_registered_agents(status_payload))
-    for todo in _iter_status_todos(status_payload):
-        agent_id = _todo_agent_id(todo)
-        if agent_id:
-            agent_ids.add(agent_id)
-    return agent_ids
+    return set(_registered_agents(status_payload))
 
 
 def _agent_material_frontiers(

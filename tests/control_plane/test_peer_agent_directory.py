@@ -12,7 +12,7 @@ from loopx.cli import main as cli_main
 from loopx.control_plane.agents.management_projection import (
     build_agent_management_projection,
     projected_agent_goals,
-    projected_agent_ids,
+    registered_agent_ids,
 )
 from loopx.control_plane.agents.directory import (
     GAP_AUDIENCE_NOT_AUTHORIZED,
@@ -197,8 +197,8 @@ def test_projection_pages_past_its_display_cap_and_reports_the_page_span() -> No
 
     full = build_agent_management_projection(payload)
     assert len(full["agents"]) == MAX_DIRECTORY_ROWS
-    # The full set is what scope questions read; only the rows are capped.
-    assert projected_agent_ids(payload) == set(expected_order)
+    # Registration is what scope questions read; only the rows are capped.
+    assert registered_agent_ids(payload) == set(registered)
     assert "selected_agent_count" not in full["source_summary"]
 
     page = build_agent_management_projection(payload, after_agent_id=cursor)
@@ -210,7 +210,11 @@ def test_projection_pages_past_its_display_cap_and_reports_the_page_span() -> No
 
 
 def test_capped_directory_completes_by_following_next_cursor() -> None:
-    registered = [f"agent-{index:02d}" for index in range(MAX_DIRECTORY_ROWS + 4)]
+    registered = [
+        *[f"agent-{index:02d}" for index in range(MAX_DIRECTORY_ROWS + 4)],
+        WORKING_AGENT,
+        STALE_AGENT,
+    ]
     payload = _status_payload(registered)
     expected_order = sorted(set(registered) | {WORKING_AGENT, STALE_AGENT})
 
@@ -263,6 +267,73 @@ def test_registered_caller_beyond_the_first_page_keeps_its_scope() -> None:
     assert "agent-00" not in [row["agent_id"] for row in later["rows"]]
 
 
+def test_a_claim_that_outlived_its_registration_cannot_admit_its_claimant() -> None:
+    """A Todo claim is a work relationship, not a registration a caller may use."""
+
+    registered = [f"agent-{index:02d}" for index in range(MAX_DIRECTORY_ROWS + 6)]
+    payload = _status_payload(registered)
+    payload["todo_index"]["items"].append(
+        {
+            "role": "agent",
+            "todo_id": "todo_directory_retained_claim",
+            "goal_id": GOAL_ID,
+            "status": "open",
+            "priority": "P2",
+            "task_class": "advancement_task",
+            "action_kind": "implement",
+            "claimed_by": "zz-unregistered",
+            "text": "A claim whose Agent the Goal does not register.",
+        }
+    )
+
+    # Paging must not change the answer: neither a fresh scan nor a later page
+    # admits a caller whose only relationship is a claim.
+    for cursor in (None, registered[MAX_DIRECTORY_ROWS - 1]):
+        packet = build_peer_agent_directory(
+            payload, caller_agent_id="zz-unregistered", cursor=cursor
+        )
+        assert packet["rows"] == []
+        assert packet["row_count"] == 0
+        assert packet["scope"]["caller_membership"] == "unregistered_agent"  # type: ignore[index]
+        assert [gap["kind"] for gap in packet["scope"]["gaps"]] == [  # type: ignore[index]
+            GAP_AUDIENCE_NOT_AUTHORIZED
+        ]
+
+        # The same page still serves a registered caller: the refusal is the
+        # caller's membership, not the page a cursor selects.
+        allowed = build_peer_agent_directory(
+            payload, caller_agent_id="agent-00", cursor=cursor
+        )
+        assert allowed["scope"]["gaps"] == []  # type: ignore[index]
+        assert allowed["rows"]
+
+
+def test_a_retained_claim_row_is_not_marked_as_a_registered_member() -> None:
+    """Diagnostic claim rows stay visible; registration stays the registry's."""
+
+    payload = _status_payload()
+    payload["todo_index"]["items"].append(
+        {
+            "role": "agent",
+            "todo_id": "todo_directory_retained_claim",
+            "goal_id": GOAL_ID,
+            "status": "open",
+            "priority": "P2",
+            "task_class": "advancement_task",
+            "action_kind": "implement",
+            "claimed_by": "zz-unregistered",
+            "text": "A claim whose Agent the Goal does not register.",
+        }
+    )
+
+    packet = build_peer_agent_directory(payload, caller_agent_id=WORKING_AGENT)
+    rows = _rows_by_agent(packet)
+
+    assert rows["zz-unregistered"]["registered"] is False
+    assert rows["zz-unregistered"]["work"]["todo_id"] == "todo_directory_retained_claim"  # type: ignore[index]
+    assert rows[IDLE_AGENT]["registered"] is True
+
+
 def test_a_page_inside_the_published_evidence_keeps_its_lease_facts() -> None:
     payload = _payload_with_published_evidence([WORKING_AGENT, IDLE_AGENT, STALE_AGENT])
 
@@ -280,7 +351,11 @@ def test_a_page_inside_the_published_evidence_keeps_its_lease_facts() -> None:
 def test_a_page_beyond_the_published_evidence_declares_lease_state_not_projected() -> None:
     """The payload's projection is capped too; a later page must say so."""
 
-    registered = [f"agent-{index:02d}" for index in range(MAX_DIRECTORY_ROWS + 4)]
+    registered = [
+        *[f"agent-{index:02d}" for index in range(MAX_DIRECTORY_ROWS + 4)],
+        WORKING_AGENT,
+        STALE_AGENT,
+    ]
     payload = _payload_with_published_evidence(registered)
 
     first = build_peer_agent_directory(payload, caller_agent_id=WORKING_AGENT)

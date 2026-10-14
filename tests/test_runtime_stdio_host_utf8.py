@@ -1,0 +1,193 @@
+"""The shipped stdio hosts LoopX starts must pin their own streams to UTF-8.
+
+`sys.stdin` and `sys.stdout` default to the host locale codec - `cp936` on a
+zh-CN Windows host - while every LoopX caller writes and reads these transports
+as UTF-8. On such a host each entry below decodes its caller's request with
+`gbk`, and the outcome depends on whether the request's bytes pair up: a
+multi-byte sequence with no partner raises `UnicodeDecodeError`, and one that
+pairs decodes *without any error* into different text. `gbk` is a two-byte
+codec, so a lone lead byte consumes the byte after it - a path separator or a
+JSON escape introducer simply disappears.
+
+That silent half is why this is not only a crash. `shadow_lock_host` answers
+`held` while locking a differently named directory, `research_snapshot_host`
+reads a different runtime root and still returns a complete snapshot for it, and
+`scan_cli --diff` - the documented fail-closed public-boundary gate - reports
+`PASS: public-safe` for a diff that does contain a private absolute path.
+
+#6470. `test_cli_stdio_utf8.py`, `test_claude_goal_mode_stdio_utf8.py`,
+`test_dsh_goal_mode_stdio_utf8.py` and
+`tests/extensions/test_extension_provider_stdio_utf8.py` guard the other
+entries of the same family.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# The codec an unpinned host falls back to on a zh-CN Windows console.
+LOCALE_CODEC = "gbk"
+
+# A name whose UTF-8 bytes are odd in number, so the last byte is a lead byte
+# with no partner and `gbk` consumes the byte after it. What that byte was
+# decides whether the request is rejected or silently rewritten.
+ODD_BYTES_NAME = "\u9ec4\u6c5f\u5357"
+# A name whose UTF-8 bytes pair up completely. `gbk` decodes it into different
+# text without reporting anything, so only the addresses it reaches show it.
+EVEN_BYTES_NAME = "\u6d4b\u8bd5"
+
+
+def _run(
+    module: str, *argv: str, stdin: bytes = b""
+) -> subprocess.CompletedProcess[bytes]:
+    environment = {**os.environ, "PYTHONIOENCODING": LOCALE_CODEC, "PYTHONUTF8": "0"}
+    return subprocess.run(
+        [sys.executable, "-m", module, *argv],
+        cwd=REPO_ROOT,
+        env=environment,
+        input=stdin,
+        capture_output=True,
+        timeout=180,
+    )
+
+
+def _request_bytes(payload: dict | list) -> bytes:
+    """Raw UTF-8 request bytes that keep the non-ASCII path literal, not escaped."""
+
+    raw = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+    assert any(ord(character) > 127 for character in raw.decode("utf-8"))
+    return raw
+
+
+@pytest.mark.parametrize("name", [ODD_BYTES_NAME, EVEN_BYTES_NAME])
+def test_shadow_lock_host_locks_the_requested_directory(
+    tmp_path: Path, name: str
+) -> None:
+    """The lock must land on the path the caller named instead of a re-encoded one."""
+
+    root = tmp_path / f"Users-{name}"
+    (root / "runtime").mkdir(parents=True)
+    lock = root / "runtime" / "authority.lock"
+
+    result = _run(
+        "loopx.control_plane.coordination.shadow_lock_host",
+        stdin=_request_bytes([str(lock)]) + b"release\n",
+    )
+
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    assert result.stdout.split() == [b"held", b"released"]
+    # A locale decode consumes the separator inside the path, so the lock would
+    # land on a differently named sibling and leave the requested path empty.
+    assert sorted(path.name for path in tmp_path.iterdir()) == [root.name]
+
+
+@pytest.mark.parametrize("name", [ODD_BYTES_NAME, EVEN_BYTES_NAME])
+def test_research_snapshot_host_reads_the_requested_runtime_root(
+    tmp_path: Path, name: str
+) -> None:
+    """The snapshot must be computed against the runtime root the caller named."""
+
+    root = tmp_path / f"Users-{name}"
+    root.mkdir()
+
+    result = _run(
+        "loopx.capabilities.explore.research_snapshot_host",
+        stdin=_request_bytes(
+            {
+                "runtime_root": str(root),
+                "goal_id": "g1",
+                "harness": {},
+                "agent_id": "a1",
+                "todos": [],
+            }
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    assert json.loads(result.stdout.decode("utf-8"))["schema_version"] == (
+        "research_graph_snapshot_v0"
+    )
+    # A locale decode reads a different (here: previously nonexistent) runtime
+    # root, takes its graph lock there, and still returns a complete snapshot.
+    assert (root / "goals").is_dir()
+    assert sorted(path.name for path in tmp_path.iterdir()) == [root.name]
+
+
+def test_nokv_jsonl_helper_reads_the_utf8_open_handshake(tmp_path: Path) -> None:
+    """A locale decode rewrites the handshake, so the caller's request id is lost."""
+
+    workbench = tmp_path / f"Users-{ODD_BYTES_NAME}" / "LoopX"
+    result = _run(
+        "loopx.control_plane.coordination.nokv_jsonl_helper",
+        stdin=_request_bytes(
+            {
+                "request_id": "r1",
+                "operation": "open",
+                "config": {
+                    "root_id": "a" * 32,
+                    "workbench_root": str(workbench),
+                    "routing": {
+                        "kind": "static",
+                        "endpoint": "127.0.0.1:1",
+                        "logical_shard_id": "0",
+                        "object_namespace_id": "0",
+                        "placement_generation": 1,
+                        "owner_epoch": 1,
+                    },
+                    "object_store": {"kind": "memory"},
+                },
+            }
+        ),
+    )
+
+    assert result.stdout, result.stderr.decode("utf-8", "replace")
+    # Consuming the escape introducer leaves invalid JSON, so an unpinned helper
+    # answers `invalid_json` with a null request id instead of reading the open.
+    assert json.loads(result.stdout.decode("utf-8"))["request_id"] == "r1"
+
+
+def test_scan_cli_diff_keeps_a_private_path_behind_a_non_ascii_name() -> None:
+    """The boundary gate must not report clean for a diff it silently re-encoded."""
+
+    diff = f"diff --git a/x b/x\n+++ b/x\n+ {ODD_BYTES_NAME}\\Users\\alice\\x\n".encode(
+        "utf-8"
+    )
+
+    result = _run(
+        "loopx.capabilities.public_safe_outbound.scan_cli",
+        "--diff",
+        "--format",
+        "text",
+        stdin=diff,
+    )
+
+    assert result.returncode == 1, result.stderr.decode("utf-8", "replace")
+    assert b"private_abs_path" in result.stdout
+    assert b"FAIL: hits found" in result.stdout
+
+
+def test_scan_cli_scan_root_writes_a_utf8_receipt(tmp_path: Path) -> None:
+    """A non-ASCII hit location must reach the caller as UTF-8, not locale bytes."""
+
+    scanned = tmp_path / f"{EVEN_BYTES_NAME}.md"
+    scanned.write_text("see /home/alice/secret\n", encoding="utf-8")
+
+    result = _run(
+        "loopx.capabilities.public_safe_outbound.scan_cli",
+        "--scan-root",
+        str(tmp_path),
+        "--format",
+        "json",
+    )
+
+    assert result.returncode == 1, result.stderr.decode("utf-8", "replace")
+    receipt = json.loads(result.stdout.decode("utf-8"))
+    assert [hit["location"] for hit in receipt["hits"]] == [scanned.name]

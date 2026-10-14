@@ -20,6 +20,8 @@ import sys
 from collections.abc import Callable, Mapping
 from typing import Any, TextIO
 
+from ...entrypoint import pin_utf8_stdio
+
 _HEX_128 = re.compile(r"^[0-9a-f]{32}$")
 _CLIENT_AVAILABILITY_ERRORS = (RuntimeError, OSError)
 QUALIFIED_NOKV_SDK_VERSION = "0.11.1"
@@ -655,6 +657,7 @@ def _sdk_protocol_schema() -> str | None:
 
 
 def main() -> int:
+    pin_utf8_stdio()
     first = sys.stdin.readline()
     try:
         value = json.loads(first)

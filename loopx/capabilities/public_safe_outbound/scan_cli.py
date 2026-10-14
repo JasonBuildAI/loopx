@@ -15,6 +15,7 @@ import sys
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
+from ...entrypoint import pin_utf8_stdio
 from .scanner import compact_json, scan_paths
 
 # Version-control metadata names. They are excluded wherever they appear below
@@ -97,6 +98,7 @@ def _iter_text_files(root: Path) -> Iterator[Path]:
 
 
 def main() -> int:
+    pin_utf8_stdio()
     p = argparse.ArgumentParser()
     p.add_argument("--scan-root", type=Path, default=None)
     p.add_argument("--diff", action="store_true")

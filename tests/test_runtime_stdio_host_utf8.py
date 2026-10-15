@@ -27,6 +27,7 @@ import json
 import os
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -79,6 +80,33 @@ def _request_bytes(payload: dict | list) -> bytes:
     raw = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
     assert any(ord(character) > 127 for character in raw.decode("utf-8"))
     return raw
+
+
+@pytest.fixture(scope="module")
+def sdk_only_python(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """A standard-library interpreter that resolves the NoKV SDK and not LoopX.
+
+    This is the interpreter shape `examples/nokv-authority-store/README.md`
+    documents for the live qualification probe: one that resolves the qualified
+    NoKV SDK, with no requirement that LoopX be installed into it. `venv` with
+    `--without-pip` builds it from the standard library alone, so nothing here
+    installs, downloads, or reaches the network.
+    """
+
+    root = tmp_path_factory.mktemp("sdk-only") / uuid.uuid4().hex
+    created = subprocess.run(
+        [sys.executable, "-I", "-m", "venv", "--without-pip", str(root)],
+        capture_output=True,
+        timeout=300,
+    )
+    python = (
+        root
+        / ("Scripts" if os.name == "nt" else "bin")
+        / ("python.exe" if os.name == "nt" else "python")
+    )
+    assert created.returncode == 0, created.stderr.decode("utf-8", "replace")
+    assert python.is_file()
+    return str(python)
 
 
 @pytest.mark.parametrize("name", [ODD_BYTES_NAME, EVEN_BYTES_NAME])
@@ -173,6 +201,62 @@ def test_nokv_jsonl_helper_reads_the_utf8_open_handshake(
     # Consuming the escape introducer leaves invalid JSON, so an unpinned helper
     # answers `invalid_json` with a null request id instead of reading the open.
     assert json.loads(result.stdout.decode("utf-8"))["request_id"] == "r1"
+
+
+@pytest.mark.parametrize("prefix", [(), ("-I",)])
+def test_nokv_jsonl_helper_starts_without_loopx_on_the_interpreter_path(
+    sdk_only_python: str, tmp_path: Path, prefix: tuple[str, ...]
+) -> None:
+    """The helper must reach its handshake where LoopX itself is not importable.
+
+    `examples/nokv-authority-store/README.md` gives the live qualification probe
+    only the absolute path to a Python executable that resolves the qualified
+    NoKV SDK, and the probe then fixes `-I` in front of this helper. That
+    interpreter is not asked to install LoopX, and `-I` drops this file's
+    directory from `sys.path`, so the helper has to bootstrap its own checkout
+    instead of requiring an installed package. Both real launch modes are
+    exercised: the TS transport's `[python, <file>]` and the probe's
+    `[python, "-I", <file>]`.
+    """
+
+    # Ground truth, not an assumption about the fixture: without the helper's
+    # bootstrap there is no route from this interpreter to LoopX at all.
+    probe = subprocess.run(
+        [sdk_only_python, *prefix, "-c", "import loopx"],
+        cwd=tmp_path,
+        capture_output=True,
+        timeout=180,
+    )
+    assert probe.returncode != 0, probe.stdout.decode("utf-8", "replace")
+    assert b"ModuleNotFoundError" in probe.stderr, probe.stderr.decode(
+        "utf-8", "replace"
+    )
+
+    result = subprocess.run(
+        [sdk_only_python, *prefix, str(NOKV_HELPER)],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONIOENCODING": LOCALE_CODEC, "PYTHONUTF8": "0"},
+        input=_request_bytes(
+            {
+                "request_id": "r1",
+                "operation": "open",
+                "config": {
+                    "routing": {},
+                    "workbench_root": str(tmp_path / EVEN_BYTES_NAME),
+                },
+            }
+        ),
+        capture_output=True,
+        timeout=180,
+    )
+
+    # An import that fails before `main()` writes nothing at all, and the caller
+    # sees a disconnected helper instead of a typed refusal.
+    assert result.stdout, result.stderr.decode("utf-8", "replace")
+    refusal = json.loads(result.stdout.decode("utf-8"))
+    assert refusal["status"] == "failed"
+    assert refusal["request_id"] == "r1"
+    assert refusal["reason_code"] == "invalid_config"
 
 
 def test_scan_cli_diff_keeps_a_private_path_behind_a_non_ascii_name() -> None:

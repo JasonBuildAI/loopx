@@ -20,7 +20,11 @@ import sys
 from collections.abc import Callable, Mapping
 from typing import Any, TextIO
 
-from ...entrypoint import pin_utf8_stdio
+# The TS transport (`[python, <this file>]`) and the live qualification probe
+# (`[python, "-I", <this file>]`) execute this file directly, where a relative
+# import has no package context. Import the shared codec owner by its installed
+# name so both launch modes keep working.
+from loopx.entrypoint import pin_utf8_stdio
 
 _HEX_128 = re.compile(r"^[0-9a-f]{32}$")
 _CLIENT_AVAILABILITY_ERRORS = (RuntimeError, OSError)

@@ -45,18 +45,32 @@ ODD_BYTES_NAME = "\u9ec4\u6c5f\u5357"
 EVEN_BYTES_NAME = "\u6d4b\u8bd5"
 
 
-def _run(
-    module: str, *argv: str, stdin: bytes = b""
+# The NoKV helper is launched as a file, not as a module: the TS transport uses
+# `[python, <this file>]` and the live qualification probe uses
+# `[python, "-I", <this file>]`, so it must stay runnable without package context.
+NOKV_HELPER = (
+    REPO_ROOT / "loopx" / "control_plane" / "coordination" / "nokv_jsonl_helper.py"
+)
+
+
+def _run_argv(
+    argv: list[str], stdin: bytes = b""
 ) -> subprocess.CompletedProcess[bytes]:
     environment = {**os.environ, "PYTHONIOENCODING": LOCALE_CODEC, "PYTHONUTF8": "0"}
     return subprocess.run(
-        [sys.executable, "-m", module, *argv],
+        argv,
         cwd=REPO_ROOT,
         env=environment,
         input=stdin,
         capture_output=True,
         timeout=180,
     )
+
+
+def _run(
+    module: str, *argv: str, stdin: bytes = b""
+) -> subprocess.CompletedProcess[bytes]:
+    return _run_argv([sys.executable, "-m", module, *argv], stdin)
 
 
 def _request_bytes(payload: dict | list) -> bytes:
@@ -121,13 +135,20 @@ def test_research_snapshot_host_reads_the_requested_runtime_root(
     assert sorted(path.name for path in tmp_path.iterdir()) == [root.name]
 
 
-def test_nokv_jsonl_helper_reads_the_utf8_open_handshake(tmp_path: Path) -> None:
-    """A locale decode rewrites the handshake, so the caller's request id is lost."""
+@pytest.mark.parametrize("prefix", [(), ("-I",)])
+def test_nokv_jsonl_helper_reads_the_utf8_open_handshake(
+    tmp_path: Path, prefix: tuple[str, ...]
+) -> None:
+    """A locale decode rewrites the handshake, so the caller's request id is lost.
+
+    Both of the helper's real launch modes are exercised: the TS transport's
+    `[python, <file>]` and the qualification probe's `[python, "-I", <file>]`.
+    """
 
     workbench = tmp_path / f"Users-{ODD_BYTES_NAME}" / "LoopX"
-    result = _run(
-        "loopx.control_plane.coordination.nokv_jsonl_helper",
-        stdin=_request_bytes(
+    result = _run_argv(
+        [sys.executable, *prefix, str(NOKV_HELPER)],
+        _request_bytes(
             {
                 "request_id": "r1",
                 "operation": "open",

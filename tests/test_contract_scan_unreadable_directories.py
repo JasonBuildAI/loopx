@@ -58,7 +58,10 @@ def test_scan_records_directory_it_cannot_list(tmp_path: Path) -> None:
         locked.chmod(0o755)
 
     assert scanned == sorted([tmp_path / "public.md"])
-    assert unreadable == ["notes: Permission denied"]
+    # `iter_scan_files` keeps the absolute directory identity and the reason;
+    # `scan_public_boundary` renders the "label: reason" form asserted below.
+    assert len(unreadable) == 1
+    assert unreadable[0] == (tmp_path / "notes", "Permission denied")
     assert boundary["unreadable_directories"] == ["notes: Permission denied"]
     assert boundary["unreadable_files"] == []
     assert boundary["hits"] == []
@@ -136,6 +139,40 @@ def test_readable_tree_records_no_unreadable_directory(tmp_path: Path) -> None:
 
     assert boundary["unreadable_directories"] == []
     assert boundary["ok"] is True
+
+
+def test_iter_scan_files_reports_the_denied_directory_and_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The collector holds the absolute directory identity, not a rendered label.
+
+    A directory the walk cannot list is reported through the walk's own `onerror`
+    callback here, so the internal shape the POSIX `chmod 000` arms assert stays
+    pinned on hosts that cannot set the mode bits.
+    """
+    from loopx import contract
+
+    (tmp_path / "public.md").write_text("public text\n", encoding="utf-8")
+    locked = tmp_path / "notes"
+    locked.mkdir()
+    (locked / "private.md").write_text(_private_line(), encoding="utf-8")
+    real_scandir = contract.os.scandir
+
+    def scandir_with_denied_directory(path, *args, **kwargs):
+        if str(path) == str(locked):
+            raise PermissionError(13, "Permission denied", str(locked))
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(contract.os, "scandir", scandir_with_denied_directory)
+    unreadable: list[tuple[Path, str]] = []
+
+    scanned = iter_scan_files(tmp_path, unreadable_directories=unreadable)
+
+    assert (locked / "private.md").is_file()
+    assert scanned == sorted([tmp_path / "public.md"])
+    # The identity is the directory itself; only the rendering adds the label.
+    assert [directory for directory, _ in unreadable] == [locked]
+    assert [reason for _, reason in unreadable] == ["Permission denied"]
 
 
 def test_a_denied_scan_root_is_reported_once(

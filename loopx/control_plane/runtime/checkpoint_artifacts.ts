@@ -4,7 +4,7 @@
  */
 import {createHash} from "node:crypto";
 import {createReadStream} from "node:fs";
-import {copyFile, lstat, mkdir, mkdtemp, open, readFile, readdir, rm} from "node:fs/promises";
+import {chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readdir, rm} from "node:fs/promises";
 import {dirname, isAbsolute, join, resolve, sep} from "node:path";
 import type {JsonObject} from "../effect_program.ts";
 import {jsonObject, requireJsonObject, requireNonEmptyString} from "../runtime_decode.ts";
@@ -114,6 +114,28 @@ async function sqliteSidecar(path: string, suffixes: string[]): Promise<boolean>
   try {return (await lstat(database)).isFile() && await sqliteFile(database);}
   catch (error) {if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error;}
 }
+async function syncCopiedFile(path: string): Promise<void> {
+  const handle = await open(path, "r+");
+  try {await handle.sync();} finally {await handle.close();}
+}
+/** Flush a freshly copied checkpoint member through an updatable handle.
+ * copyFile preserves a read-only participant's mode, and Windows
+ * FlushFileBuffers rejects read-only handles, so a read-only copy grants owner
+ * access only to this staged copy for the durability sync and restores its
+ * mode before the caller witnesses or publishes it. POSIX syncs a read-only
+ * handle directly, but the update path covers both read-only cases.
+ */
+async function flushCopiedFile(path: string): Promise<void> {
+  try {await syncCopiedFile(path);}
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EACCES" && code !== "EPERM") throw error;
+    const mode = (await lstat(path)).mode & 0o777;
+    await chmod(path, mode | 0o600);
+    try {await syncCopiedFile(path);}
+    finally {await chmod(path, mode);}
+  }
+}
 async function copyComponent(source: string, destination: string, snapshotDatabases = true): Promise<void> {
   const stat = await lstat(source);
   if (stat.isSymbolicLink()) throw new Error("checkpoint source became a symlink");
@@ -135,10 +157,7 @@ async function copyComponent(source: string, destination: string, snapshotDataba
     // SQLite's existing physical snapshot owner seals committed WAL contents.
     if (snapshotDatabases && await sqliteFile(source)) await snapshotSqliteDatabase(source, destination);
     else await copyFile(source, destination);
-    // copyFile preserves a read-only participant's mode. Syncing its bytes
-    // needs no write access; r+ fails for an ordinary non-root controller.
-    const handle = await open(destination, "r");
-    try {await handle.sync();} finally {await handle.close();}
+    await flushCopiedFile(destination);
   } else throw new Error("checkpoint source contains an unsupported file type");
 }
 function manifestBody(raw: unknown): JsonObject {

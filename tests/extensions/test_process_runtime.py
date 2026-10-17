@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -12,7 +13,11 @@ from unittest.mock import Mock
 import pytest
 
 import loopx.extensions.process_runtime as process_runtime
-from loopx.extensions.process_runtime import run_capped_process, terminate_process_tree
+from loopx.extensions.process_runtime import (
+    remove_owned_tree,
+    run_capped_process,
+    terminate_process_tree,
+)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group regression")
@@ -423,3 +428,17 @@ def test_no_execution_deadline_preserves_completion_and_output_budget():
         stdin=b"", timeout_seconds=None, output_limit_bytes=1024,
     )
     assert limited.failure_kind == "response_too_large"
+
+
+def test_remove_owned_tree_removes_a_read_only_member(tmp_path: Path) -> None:
+    # Git marks every loose object it writes read-only, and Windows refuses to
+    # unlink a read-only file, which stranded the whole fixture root.
+    object_directory = tmp_path / ".git" / "objects" / "39"
+    object_directory.mkdir(parents=True)
+    object_file = object_directory / "6a2d80dac5ee96f7f8e1b120f2358ae0fcda"
+    object_file.write_bytes(b"blob")
+    os.chmod(object_file, stat.S_IREAD)
+
+    remove_owned_tree(tmp_path)
+
+    assert not tmp_path.exists()

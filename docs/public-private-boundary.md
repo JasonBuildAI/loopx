@@ -1,10 +1,6 @@
 # Public / Private Boundary
 
-<<<<<<< HEAD
 LoopX is designed to be public, but most useful goal evidence is not.
-=======
-Goal Harness is designed to be public, but most useful goal evidence is not.
->>>>>>> 7dcdc9dc7 (Initial public goal harness scaffold)
 
 ## Public
 
@@ -14,11 +10,8 @@ These are safe to keep in the public repository:
 - runtime directory conventions,
 - generic CLI code,
 - adapter lifecycle rules,
-<<<<<<< HEAD
 - peer task and ephemeral worker lifecycle states,
 - generic coordination rules,
-=======
->>>>>>> 7dcdc9dc7 (Initial public goal harness scaffold)
 - validation commands,
 - sanitized examples,
 - high-level design notes.
@@ -34,7 +27,6 @@ These should stay in project-local ignored files:
 - document links,
 - credentials and tokens,
 - person or team names from private work,
-<<<<<<< HEAD
 - active goal state that reveals current user context,
 - raw sub-agent prompts and traces,
 - child run evidence that contains local paths or private artifacts.
@@ -250,18 +242,10 @@ Run summaries are publishable only after sanitization.
 ## Practical Rule
 
 The public repo should answer: "How does a loopx work?"
-=======
-- active goal state that reveals current user context.
-
-## Practical Rule
-
-The public repo should answer: "How does a goal harness work?"
->>>>>>> 7dcdc9dc7 (Initial public goal harness scaffold)
 
 The project repo should answer: "What is this specific goal currently doing?"
 
 The runtime root should answer: "What happened in recent goal ticks?"
-<<<<<<< HEAD
 
 Real controller state belongs in ignored local files such as
 `.loopx/goals/<goal-id>/ACTIVE_GOAL_STATE.md`,
@@ -338,5 +322,3 @@ The first public artifact from a private pilot should usually be a sanitized
 fixture or status schema. The first private artifact should be a compact
 project-local state update that says which private sources were considered and
 why they were or were not safe to project.
-=======
->>>>>>> 7dcdc9dc7 (Initial public goal harness scaffold)

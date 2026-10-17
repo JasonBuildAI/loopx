@@ -1,10 +1,6 @@
 # Integration Guide
 
-<<<<<<< HEAD
 LoopX should be used as a shared local base, not copied into every
-=======
-Goal Harness should be used as a shared local base, not copied into every
->>>>>>> 7dcdc9dc7 (Initial public goal harness scaffold)
 project.
 
 ## Local Base
@@ -12,7 +8,6 @@ project.
 Clone or symlink one copy:
 
 ```bash
-<<<<<<< HEAD
 git clone <repo-url> ~/loopx
 ~/loopx/scripts/install-local.sh
 loopx doctor
@@ -54,16 +49,11 @@ loopx-canary heartbeat-prompt \
 # After canary observation looks healthy, promote the checkout to default.
 ~/loopx/scripts/install-local.sh
 loopx doctor
-=======
-git clone <repo-url> ~/goal-harness
-python3 -m pip install -e ~/goal-harness
->>>>>>> 7dcdc9dc7 (Initial public goal harness scaffold)
 ```
 
 Then projects can call:
 
 ```bash
-<<<<<<< HEAD
 loopx --registry <private-registry> registry
 loopx --registry <private-registry> history
 loopx --registry <private-registry> status
@@ -327,11 +317,6 @@ work state or local evidence, add them to `.gitignore`:
 ```gitignore
 .loopx/
 .loopx/goals/
-=======
-goal-harness --registry <private-registry> registry
-goal-harness --registry <private-registry> history
-goal-harness --registry <private-registry> check --scan-root <project-root>
->>>>>>> 7dcdc9dc7 (Initial public goal harness scaffold)
 ```
 
 ## Project Adapter
@@ -347,16 +332,11 @@ A project adapter should be thin and project-specific. It may read:
 It should output:
 
 - `classification`,
-<<<<<<< HEAD
 - exactly one `recommended_action` for the local control loop,
-=======
-- exactly one `recommended_action`,
->>>>>>> 7dcdc9dc7 (Initial public goal harness scaffold)
 - relevant warnings,
 - hard guards,
 - optional run log paths.
 
-<<<<<<< HEAD
 `recommended_action` is local project state, not a public artifact by default:
 it may include private project refs such as todo ids, branch names, local
 aliases, or operator-private routing labels. It must not include AK/SK values,
@@ -437,27 +417,17 @@ checks, transfer, and compare-and-swap behavior. Hard leases remain keyed by
 `(goal_id, todo_id)`, so unrelated todos under the same goal can still run in
 parallel when scopes permit.
 
-=======
-By default it should be read-only. Launching jobs, stopping jobs, syncing docs,
-or editing production state requires explicit user approval.
-
->>>>>>> 7dcdc9dc7 (Initial public goal harness scaffold)
 ## Shared Runtime
 
 All adapters should save compact run history under:
 
 ```text
-<<<<<<< HEAD
 ~/.loopx/goals/<goal-id>/runs/index.jsonl
-=======
-~/.codex/goal-harness/goals/<goal-id>/runs/index.jsonl
->>>>>>> 7dcdc9dc7 (Initial public goal harness scaffold)
 ```
 
 This gives the app, CLI, heartbeats, and future UI one place to inspect goal
 history.
 
-<<<<<<< HEAD
 Project-local registries should also sync into the shared global registry:
 
 ```text
@@ -728,8 +698,6 @@ the [status data contract](status-data-contract.md).
 Keep adapter output sanitized before it enters the compact index. The status
 queue is meant for control-plane display, not for raw private evidence.
 
-=======
->>>>>>> 7dcdc9dc7 (Initial public goal harness scaffold)
 ## Public Repo vs Project Repo
 
 Put generic code here:
@@ -737,12 +705,8 @@ Put generic code here:
 - registry and history readers,
 - contract checker,
 - generic schema and docs,
-<<<<<<< HEAD
 - sanitized adapter examples,
 - peer task and ephemeral worker lifecycle examples.
-=======
-- sanitized adapter examples.
->>>>>>> 7dcdc9dc7 (Initial public goal harness scaffold)
 
 Keep in the project repo:
 
@@ -751,9 +715,5 @@ Keep in the project repo:
 - private registry,
 - domain-specific health checks.
 
-<<<<<<< HEAD
 This split lets many local projects share one stable LoopX base while
-=======
-This split lets many local projects share one stable Goal Harness base while
->>>>>>> 7dcdc9dc7 (Initial public goal harness scaffold)
 keeping their real evidence and safety policies local.

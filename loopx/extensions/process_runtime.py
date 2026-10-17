@@ -3,7 +3,9 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 import os
+import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -238,6 +240,48 @@ def prepare_owned_process_cleanup(process: subprocess.Popen[bytes]) -> Callable[
             kernel.CloseHandle(job)
             closed = True
     return cleanup
+
+def _clear_windows_read_only_files(root: str) -> None:
+    """Clear the read-only attribute of every file git wrote under ``root``.
+
+    Windows refuses to unlink a read-only file even though its directory is
+    writable, and git marks each loose object and pack read-only, so a tree that
+    holds a repository cannot be removed. Only Windows has that rule: POSIX
+    unlinks a read-only member of a writable directory. Links are skipped so
+    this walk cannot reach a target outside the owned tree.
+    """
+    for directory, _subdirectories, files in os.walk(root):
+        for name in files:
+            target = os.path.join(directory, name)
+            if os.path.islink(target):
+                continue
+            try:
+                mode = os.stat(target).st_mode
+                if not mode & stat.S_IWRITE:
+                    os.chmod(target, mode | stat.S_IWRITE)
+            except OSError:
+                continue
+
+
+def remove_owned_tree(path: str | Path) -> None:
+    """Delete an owned, previously isolated tree while tolerating host attributes.
+
+    The filesystem sibling of :func:`terminate_process_tree`: a smoke fixture
+    root or frozen workspace is created by one owner, filled with host fixtures,
+    and removed by the same owner. A fixture that contains a git repository
+    cannot be removed by a plain ``shutil.rmtree`` on Windows, where every loose
+    object git wrote carries the read-only attribute, so teardown fails with
+    ``PermissionError`` [WinError 5] and the whole tree is left behind. The
+    attribute is cleared first on Windows only; every other host already removes
+    a read-only member of a writable directory unchanged. Ownership still stays
+    with the caller: a removal that cannot complete raises, so a caller that must
+    retain the tree for diagnosis can keep observing it.
+    """
+    root = os.fspath(path)
+    if os.name == "nt":
+        _clear_windows_read_only_files(root)
+    shutil.rmtree(root)
+
 
 def run_capped_process(
     argv: Sequence[str],

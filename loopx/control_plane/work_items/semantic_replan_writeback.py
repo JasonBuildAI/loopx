@@ -32,6 +32,7 @@ from .autonomous_replan_obligation import (
     project_todo_lifecycle_settlement_reentry,
 )
 from .progress_observation import guarded_replan_transition_delta, semantic_delta_from_writeback
+from ..effect_runtime import effect_runtime_request_scope
 from .repair_delta import (
     build_repair_delta_contract,
     repair_delta_kinds_have_accountable_progress,
@@ -200,6 +201,7 @@ def _obligation_was_created_by_current_completion(
     )
 
 
+@effect_runtime_request_scope()
 def qualify_replan_writeback(
     *,
     newest_first_runs: list[dict[str, Any]] | None,
@@ -227,6 +229,8 @@ def qualify_replan_writeback(
     The write path deliberately reuses quota's goal-frontier reducer. It does
     not classify maintenance from prose and therefore sees obligations derived
     from run history, agent vision, and final-outcome checkpoints alike.
+    Nested decisions share one runtime code revision for this qualification;
+    source and provider reads remain fresh, without caching decision facts.
     """
 
     safe_agent_id = str(agent_id or "").strip()
@@ -351,7 +355,7 @@ def qualify_replan_writeback(
             # derived frontier obligation remains visible to the next guard.
             return None, transition_delta
     lifecycle = next((candidate for candidate in context.get("replan_transition_candidates", [])
-        if candidate.get("lifecycle_settled") is True and
+        if (candidate.get("source_obligation") or {}).get("resolution_mode") == "todo_lifecycle_settlement" and
         (candidate.get("obligation") or {}).get("obligation_id") == guard_semantic_replan_obligation_id), None)
     obligation = lifecycle["obligation"] if guard_scoped and lifecycle else context.get("replan_obligation")
     if not obligation and guard_scoped and guard_semantic_replan_obligation_id:

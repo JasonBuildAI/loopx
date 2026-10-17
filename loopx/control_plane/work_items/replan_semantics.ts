@@ -4,6 +4,7 @@ import { optionalNonEmptyString, requireJsonObject, requireNonEmptyString } from
 import { visionAuthoringContract } from "../goals/vision_checkpoint.ts";
 import { parseTodoTimestampMicros } from "../runtime_timestamp.ts";
 import {normalizeStrideDecision, normalizeStrideStrategy, STRIDE_DECISION_SCHEMA, strideControlContract, stridePlanningGuidance, strideReviewMismatch} from "./stride_policy.ts";
+import { projectProgressDelta } from "./progress_delta.ts";
 
 const PROGRESS_OUTCOMES = [
   "new_surface", "new_hypothesis", "new_probe_family", "new_runnable_successor",
@@ -159,10 +160,17 @@ function lifecycleObligation(request: JsonObject): JsonObject | null {
   const source = lifecycleSource(request);
   const items = source.items as JsonObject[];
   const triggers = Array.isArray(obligation.triggers) ? obligation.triggers.map(object) : [];
-  if (source.settled !== true || triggers.length !== Math.min(3, items.length) ||
+  if (items.length === 0 ||
+      (typeof request.lifecycle_settled === "boolean" && request.lifecycle_settled !== source.settled) ||
+      triggers.length !== Math.min(3, items.length) ||
       triggers.some((trigger, index) => trigger.kind !== "completed_advancement_without_successor" ||
         trigger.agent_id !== request.agent_id || trigger.todo_id !== items[index].todo_id ||
         trigger.completion_turn_key !== items[index].completion_turn_key)) return null;
+  // New independent work may change the frontier before the admitted lifecycle
+  // is closed. Preserve its exact pending actions; recovery is not settlement.
+  if (source.settled !== true) {
+    return {...obligation, required: true, selection_binding: "heartbeat_receipt"};
+  }
   const reason = "The exact completed Todo lifecycle is settled. Reassess the original acceptance with evidence, then write back and settle this Turn once; do not repeat the original work.";
   return {...obligation, required: true, selection_binding: "heartbeat_receipt",
     resolution_mode: "receipt_bound_replan_settlement", satisfying_semantic_outcomes: [...VISION_OUTCOMES],
@@ -198,7 +206,7 @@ function preserveReceiptBoundObligation(request: JsonObject): JsonObject {
   for (const value of request.transition_candidates) {
     const candidate = object(value);
     const obligation = object(candidate.obligation);
-    if (request.guard_scoped && candidate.lifecycle_settled === true) {
+    if (request.guard_scoped && object(candidate.source_obligation).resolution_mode === "todo_lifecycle_settlement") {
       const recovered = lifecycleObligation({...candidate, obligation: candidate.source_obligation,
         selected_obligation_id: selected, agent_id: request.agent_id});
       if (recovered) return {obligation: recovered};
@@ -334,6 +342,15 @@ function acknowledgeVisionEvidence(request: JsonObject): JsonObject {
     gaps.length > 0 && gaps.every(time => time !== null && time <= acknowledgedAt)};
 }
 
+export function projectReplanWriteback(value: unknown): JsonObject {
+  const request = requireJsonObject(value, "work_item.replan_semantics params");
+  if (request.operation !== "qualify") return projectReplanSemantics(request);
+  if (!Object.hasOwn(request, "progress_source") || Object.hasOwn(request, "observation_delta")) {
+    throw new EffectRuntimeRequestError("qualify requires progress_source, not a precomputed observation_delta");
+  }
+  return projectReplanSemantics({...request, observation_delta: projectProgressDelta(request.progress_source)});
+}
+
 export function projectReplanSemantics(value: unknown): JsonObject {
   const request = requireJsonObject(value, "work_item.replan_semantics params");
   if (request.operation === "lifecycle_source") return lifecycleSource(request);
@@ -372,8 +389,8 @@ export function projectReplanSemantics(value: unknown): JsonObject {
   if (request.operation !== "qualify") {
     throw new EffectRuntimeRequestError("replan semantics operation must be requirements or qualify");
   }
-  // The progress codec computes evidence novelty; this boundary decides which
-  // outcomes discharge this obligation. Vision has already passed prepare.
+  // The native progress owner computes novelty before this outcome kernel.
+  // Vision has already passed prepare.
   const observation = object(request.observation_delta);
   const vision = object(request.agent_vision);
   const patch = object(vision.vision_patch);
@@ -395,7 +412,7 @@ export function projectReplanSemantics(value: unknown): JsonObject {
   const reviewMismatch = strideDecision && structuredReview
     ? periodicStrideReview && strideDecision.reference_context_id !== context.context_id
       ? "Stride decision must reference the delivered due-review context."
-      : strideReviewMismatch(strideDecision, context)
+      : strideReviewMismatch(strideDecision, context, request.stride_review_evidence)
     : null;
   let outcomes = strings(observation.delta_kinds);
   if (outcomes.some(value => (CAPABILITY_OUTCOMES as readonly string[]).includes(value))) {

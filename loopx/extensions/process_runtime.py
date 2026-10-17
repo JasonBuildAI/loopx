@@ -241,19 +241,54 @@ def prepare_owned_process_cleanup(process: subprocess.Popen[bytes]) -> Callable[
             closed = True
     return cleanup
 
+_WINDOWS_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+def _is_link_or_junction(target: str) -> bool:
+    """Whether ``target`` is a link this teardown must not traverse.
+
+    ``os.path.islink`` covers POSIX symlinks and Windows file or directory
+    symlinks. A Windows junction is also a reparse point but is not reported as
+    a symlink, and ``os.walk`` still descends into it, so the reparse attribute
+    is checked explicitly; ``os.path.isjunction`` does not exist before 3.12.
+    """
+    if os.path.islink(target):
+        return True
+    if os.name != "nt":
+        return False
+    try:
+        status = os.lstat(target)
+    except OSError:
+        return False
+    # Only a directory reparse point (junction or mount point) can redirect the
+    # walk; file reparse points such as cloud placeholders are not links, so
+    # their read-only attribute is still cleared normally. ``st_file_attributes``
+    # exists only on Windows, so read it dynamically instead of through the
+    # cross-platform ``stat_result`` type.
+    attributes = getattr(status, "st_file_attributes", 0)
+    return stat.S_ISDIR(status.st_mode) and bool(
+        attributes & _WINDOWS_REPARSE_POINT
+    )
+
+
 def _clear_windows_read_only_files(root: str) -> None:
     """Clear the read-only attribute of every file git wrote under ``root``.
 
     Windows refuses to unlink a read-only file even though its directory is
     writable, and git marks each loose object and pack read-only, so a tree that
     holds a repository cannot be removed. Only Windows has that rule: POSIX
-    unlinks a read-only member of a writable directory. Links are skipped so
-    this walk cannot reach a target outside the owned tree.
+    unlinks a read-only member of a writable directory. Links and junctions are
+    skipped so this walk cannot reach a target outside the owned tree.
     """
-    for directory, _subdirectories, files in os.walk(root):
+    for directory, subdirectories, files in os.walk(root):
+        subdirectories[:] = [
+            name
+            for name in subdirectories
+            if not _is_link_or_junction(os.path.join(directory, name))
+        ]
         for name in files:
             target = os.path.join(directory, name)
-            if os.path.islink(target):
+            if _is_link_or_junction(target):
                 continue
             try:
                 mode = os.stat(target).st_mode
@@ -273,11 +308,16 @@ def remove_owned_tree(path: str | Path) -> None:
     object git wrote carries the read-only attribute, so teardown fails with
     ``PermissionError`` [WinError 5] and the whole tree is left behind. The
     attribute is cleared first on Windows only; every other host already removes
-    a read-only member of a writable directory unchanged. Ownership still stays
-    with the caller: a removal that cannot complete raises, so a caller that must
-    retain the tree for diagnosis can keep observing it.
+    a read-only member of a writable directory unchanged. A root that is itself
+    a link or junction is refused before any attribute is cleared: ``os.walk``
+    would start at the link target, and ``shutil.rmtree`` only refuses the link
+    after that walk has already changed permissions outside the owned tree.
+    Ownership still stays with the caller: a removal that cannot complete raises,
+    so a caller that must retain the tree for diagnosis can keep observing it.
     """
     root = os.fspath(path)
+    if _is_link_or_junction(root):
+        raise OSError(f"refusing to remove linked tree root: {root}")
     if os.name == "nt":
         _clear_windows_read_only_files(root)
     shutil.rmtree(root)

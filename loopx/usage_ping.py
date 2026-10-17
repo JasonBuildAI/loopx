@@ -200,7 +200,24 @@ def observe_verified_return() -> None:
         pass
 
 
+# Request fields that name a caller-owned filesystem path. The child runs in a
+# stable directory instead of the caller's, so a relative value must be fixed
+# here or it would resolve against the wrong directory.
+_CALLER_PATH_FIELDS = ("path", "registry", "runtime")
+
+
+def _pin_caller_paths(request: dict[str, Any]) -> dict[str, Any]:
+    """Freeze caller-owned request paths before the child loses the caller cwd."""
+    pinned = dict(request)
+    for field in _CALLER_PATH_FIELDS:
+        value = pinned.get(field)
+        if isinstance(value, str) and value:
+            pinned[field] = str(Path(value).expanduser().resolve())
+    return pinned
+
+
 def _detach(request: dict[str, Any], *, command: list[str] | None = None) -> None:
+    request = _pin_caller_paths(request)
     kwargs: dict[str, Any] = {"stdin": subprocess.PIPE, "stdout": subprocess.DEVNULL,
                               "stderr": subprocess.DEVNULL, "close_fds": True,
                               # The sender outlives the command. On Windows a

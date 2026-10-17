@@ -501,3 +501,40 @@ def test_remove_owned_tree_refuses_a_junction_root_without_touching_its_target(
 
     assert os.path.isdir(root)
     _assert_linked_target_untouched(target, fixture)
+
+
+def test_remove_owned_tree_never_clears_a_shared_hard_link_attribute(
+    tmp_path: Path,
+) -> None:
+    # git clone --local hard-links loose objects, so a read-only clone object is
+    # the same file as the source object. The Windows attribute pass must not
+    # clear its read-only bit: that would change a file outside the owned
+    # fixture, and a successful removal would hide the side effect.
+    source = tmp_path / "source"
+    source.mkdir()
+    source_object = source / "object"
+    source_object.write_bytes(b"blob")
+    os.chmod(source_object, stat.S_IREAD)
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    try:
+        os.link(source_object, owned / "object")
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"cannot create a hard link: {error}")
+    assert os.stat(source_object).st_nlink == 2
+
+    if os.name == "nt":
+        # Fail closed: this directory entry cannot be removed without changing
+        # the shared file, so the fixture is retained and the caller reports
+        # cleanup failure instead of mutating another owner's object.
+        with pytest.raises(OSError):
+            remove_owned_tree(owned)
+        assert owned.exists()
+    else:
+        # POSIX unlinks the read-only directory entry without touching the
+        # inode or its other link.
+        remove_owned_tree(owned)
+        assert not owned.exists()
+
+    assert source_object.read_bytes() == b"blob"
+    assert os.stat(source_object).st_mode & stat.S_IWRITE == 0

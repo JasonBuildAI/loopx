@@ -278,7 +278,10 @@ def _clear_windows_read_only_files(root: str) -> None:
     writable, and git marks each loose object and pack read-only, so a tree that
     holds a repository cannot be removed. Only Windows has that rule: POSIX
     unlinks a read-only member of a writable directory. Links and junctions are
-    skipped so this walk cannot reach a target outside the owned tree.
+    skipped so this walk cannot reach a target outside the owned tree, and a
+    file with more than one link is left untouched because a hard link shares
+    the file (and its read-only attribute) with another directory entry that may
+    belong to another owner; ``rmtree`` then fails closed.
     """
     for directory, subdirectories, files in os.walk(root):
         subdirectories[:] = [
@@ -291,9 +294,16 @@ def _clear_windows_read_only_files(root: str) -> None:
             if _is_link_or_junction(target):
                 continue
             try:
-                mode = os.stat(target).st_mode
-                if not mode & stat.S_IWRITE:
-                    os.chmod(target, mode | stat.S_IWRITE)
+                status = os.stat(target)
+                if status.st_nlink > 1:
+                    # A hard link is another directory entry for the same file,
+                    # and git uses them for a local clone. Clearing the
+                    # read-only attribute here would also change the source
+                    # repository object outside the owned tree, so leave it for
+                    # rmtree to fail closed instead.
+                    continue
+                if not status.st_mode & stat.S_IWRITE:
+                    os.chmod(target, status.st_mode | stat.S_IWRITE)
             except OSError:
                 continue
 

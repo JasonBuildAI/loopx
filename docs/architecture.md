@@ -1,5 +1,6 @@
 # Architecture
 
+<<<<<<< HEAD
 LoopX has six durable control-plane layers, plus an optional probe surface
 whose execution policy requires read-only observation; it is not a peer layer.
 
@@ -20,16 +21,30 @@ The `pre-tick-runnable` adapter status is declared separately and is not inferre
 from `next_probe`. There is no shipped `pre_tick` module or adapter pre-tick
 package, so keep probe registration, execution policy, and adapter status as
 separate contracts.
+=======
+Goal Harness has five layers.
+
+1. **Registry**: lists known goals, their repos, adapters, status, and guards.
+2. **Goal state**: the active state file for one goal.
+3. **Adapter pre-tick**: a read-only project-specific probe.
+4. **Run log**: JSON and Markdown reports saved per goal.
+5. **Run history**: compact indexes consumed by agents, heartbeats, and UI.
+>>>>>>> 7dcdc9dc7 (Initial public goal harness scaffold)
 
 ```text
 project goal state
   + private registry
+<<<<<<< HEAD
   + optional next_probe
+=======
+  + project adapter
+>>>>>>> 7dcdc9dc7 (Initial public goal harness scaffold)
         |
         v
 shared runtime root
         |
         v
+<<<<<<< HEAD
 loopx history/check
         |
         v
@@ -37,11 +52,18 @@ loopx status
         |
         v
 quota-aware agent tick / heartbeat / future UI
+=======
+goal-harness history/check
+        |
+        v
+agent tick / heartbeat / future UI
+>>>>>>> 7dcdc9dc7 (Initial public goal harness scaffold)
 ```
 
 The core repository intentionally avoids domain logic. A data experiment goal,
 a note-maintenance goal, and a harness self-improvement goal should share the
 same runtime and contract, but use different adapters.
+<<<<<<< HEAD
 
 ## Control Plane As Effect Interpreter
 
@@ -435,3 +457,5 @@ dashboard frontend should follow
 [dashboard-frontend-selection.md](product/roadmaps/dashboard-frontend-selection.md); the
 single-file HTML renderer remains a fallback for smoke tests and offline
 inspection.
+=======
+>>>>>>> 7dcdc9dc7 (Initial public goal harness scaffold)

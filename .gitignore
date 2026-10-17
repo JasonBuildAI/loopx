@@ -1,5 +1,6 @@
 .DS_Store
 .venv/
+<<<<<<< HEAD
 .idea
 node_modules/
 apps/dashboard/public/*.local.json
@@ -24,10 +25,17 @@ apps/desktop/loopx-control-plane/runtime/
 # Local/private operator skills. Generic, reusable contracts belong in docs or
 # product code; account-specific creator/operator skills stay outside git.
 skills/loopx-social-media/
+=======
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+>>>>>>> 7dcdc9dc7 (Initial public goal harness scaffold)
 
 # Project-local private state. Keep real project paths, task ids, tokens,
 # internal logs, and active goal state outside the public repository.
 .local/
+<<<<<<< HEAD
 .loopx/
 .goal-harness/
 .goal-wrapper.local/
@@ -44,3 +52,7 @@ logs/
 # Frontend delivery artifacts are built and qualified from source.
 /loopx/web/chat/
 /loopx/web/.chat-build-*/
+=======
+.goal-wrapper.local/
+runtime/
+>>>>>>> 7dcdc9dc7 (Initial public goal harness scaffold)

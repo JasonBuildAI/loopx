@@ -145,7 +145,7 @@ function goalCapability({
   };
 }
 
-export function goalCapabilityCatalog(multiSubagentConfiguration) {
+export function goalCapabilityCatalog(multiSubagentConfiguration, rewardMemoryConfiguration) {
   return [
     goalCapability({
       capabilityId: "todo_replan_cadence",
@@ -195,12 +195,31 @@ export function goalCapabilityCatalog(multiSubagentConfiguration) {
     }),
     multiSubagentCapability({ current: multiSubagentConfiguration }),
     goalCapability({ availability: "retired", capabilityId: "local_authority_shadow", displayName: "Retired authority observation", fields: [], readOnlyReason: "Clear retired observation config explicitly; bootstrap runtime shadow separately." }),
-    goalCapability({
+    {...goalCapability({
       availability: "experimental_opt_in",
       capabilityId: "reward_memory",
       displayName: "Reward Memory experiment",
-      fields: [],
+      fields: rewardMemoryConfiguration ? [
+        {key:"agent_id",label:"Agent",description:"",input_kind:"text",required:false},
+        {key:"enabled",label:"Enabled",description:"",input_kind:"boolean",required:false},
+        {key:"config_path",label:"Private config",description:"",input_kind:"text",required:false},
+        {key:"enabled_agents",label:"Shared Agents",description:"",input_kind:"string_list",required:false},
+      ] : [],
       readOnlyReason: "Requires a reviewed local-private provider binding.",
+    }), ...(rewardMemoryConfiguration ? {current:rewardMemoryConfiguration} : {})},
+    goalCapability({
+      availability: "supported_explicit_opt_in",
+      capabilityId: "decision_context",
+      displayName: "Decision evidence recall",
+      fields: [],
+      readOnlyReason: "Use an explicit private profile for temporary recall.",
+    }),
+    goalCapability({
+      availability: "supported_explicit_opt_in",
+      capabilityId: "content_ops",
+      displayName: "Content references",
+      fields: [],
+      readOnlyReason: "Read-only source catalog.",
     }),
   ];
 }
@@ -465,6 +484,7 @@ export async function installApi(page, { fixturePort = port, goalSubagentConfigu
     goalSubagentWrites: [],
     interrupts: [],
     goalConfigurationRequests: [],
+    goalMemoryConfigurations: new Map(),
     machineConfigurationRequests: [],
     machineInspectionStatus: "configured",
     failNextMachineInspection: false,
@@ -1343,7 +1363,7 @@ export async function installApi(page, { fixturePort = port, goalSubagentConfigu
           schema_version: "capability_configuration_catalog_v0",
           capabilities: [...machineConfigurationBase.capability_catalog.capabilities.filter(
             (capability) => !capability.available_scopes.includes("goal"),
-          ), ...goalCapabilityCatalog(multiSubagentConfiguration).map((capability) => capability.capability_id === "periodic_report" ? periodicReportCapability({
+          ), ...goalCapabilityCatalog(multiSubagentConfiguration, state.goalMemoryConfigurations.get(goalId)).map((capability) => capability.capability_id === "periodic_report" ? periodicReportCapability({
               machineCurrent: periodicConfiguration,
               effectiveConfiguration: {
                 schema_version: "capability_configuration_resolution_v0",
@@ -1483,7 +1503,7 @@ export async function installApi(page, { fixturePort = port, goalSubagentConfigu
         const existing = runtime.larkConnections.find((item) => item.connection_id === body.connection_id && item.goal_id === body.goal_id);
         if (!existing || body.app_ref || body.chat_id || body.agent_bindings) throw new Error("Editing must select the stored connection without replacing its identity");
         if (body.execute) {
-          Object.assign(existing, { turn_trigger: body.turn_trigger ?? existing.turn_trigger, agent_id: body.agent_id, ingress_mode: body.ingress_mode, capture_scope: body.capture_scope });
+          Object.assign(existing, { read_goal_scope: body.read_goal_scope ?? existing.read_goal_scope, turn_trigger: body.turn_trigger ?? existing.turn_trigger, agent_id: body.agent_id, ingress_mode: body.ingress_mode, capture_scope: body.capture_scope });
           state.larkWrites.push({ ...body });
         }
         await route.fulfill({ contentType: "application/json", json: { ok: true, status: body.execute ? "connected" : "preview_ready" }, status: 200 });
@@ -1502,6 +1522,7 @@ export async function installApi(page, { fixturePort = port, goalSubagentConfigu
             agent_id: body.conversation_kind === "manager" ? "loopx-manager" : binding.agent_id ?? null,
             conversation_kind: body.conversation_kind ?? "goal",
             turn_trigger: body.turn_trigger ?? "addressed",
+            read_goal_scope: body.read_goal_scope ?? "all_registered",
             connection_id: connectionId,
             app_label: binding.app_ref === "mew-research" ? "LoopX Research" : "LoopX Mew", app_ref: binding.app_ref, chat_name: body.chat_name, enabled: true,
             capture_scope: body.capture_scope,

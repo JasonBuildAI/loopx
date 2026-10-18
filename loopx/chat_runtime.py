@@ -992,8 +992,8 @@ class ChatRuntimeController:
                 codex_home_override=codex_profile_home(self.codex_home, session.get("codex_chat_configuration") or {}),
             )
             try:
-                observed_settings = self._observed_model_settings(adapter, session.get("requested_agent_reasoning_effort"),
-                                                                  session.get("requested_agent_model_id"))
+                # Recovery reads back the provider-restored configuration.
+                observed_settings = self._observed_model_settings(adapter)
                 if session.get("upstream_mode") == CODEX_GOAL_CHAT_MODE:
                     if not isinstance(adapter, CodexAppServerAdapter):
                         raise CodexChatAgentError("Native Goal continuation requires a Codex adapter.", error_code="native_goal_adapter_mismatch", gate=None)

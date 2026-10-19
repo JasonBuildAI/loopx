@@ -1157,6 +1157,33 @@ fn automatic_app_update(app: &AppHandle) {
                 eprintln!("LoopX prepared App update deferred: {error}");
             }
         }
+        // Windows has no staged-replacement archive to consume: the pinned
+        // plugin installs only from a checked feed, so an ordinary launch
+        // performs the bounded check and applies the verified installer
+        // before any App-owned service exists. A failed check or launch
+        // leaves the installed App usable and keeps its diagnostics.
+        #[cfg(target_os = "windows")]
+        {
+            let result: Result<Option<()>, String> =
+                tauri::async_runtime::block_on(state.run_automatic_update(
+                    channel,
+                    async {
+                        let url = endpoint(channel)?;
+                        let checked =
+                            perform(app, "check", channel, url.clone(), Duration::from_secs(3))
+                                .await?;
+                        Ok((checked["phase"] == "available").then_some(url))
+                    },
+                    |url| async move {
+                        perform(app, "apply", channel, url, Duration::from_secs(3)).await?;
+                        Ok(())
+                    },
+                    || app.restart(),
+                ));
+            if let Err(error) = result {
+                eprintln!("LoopX automatic App update deferred: {error}");
+            }
+        }
         return;
     }
     if state.automatic_update_checked.swap(true, Ordering::AcqRel) {
@@ -1718,13 +1745,14 @@ mod tests {
             state
                 .prepared_update_checked
                 .store(prepared, Ordering::Release);
-            let code = finalize_install_failure(&state, usable, || {
-                if discard_ok {
-                    Ok(true)
-                } else {
-                    Err("update_state_unavailable".into())
-                }
-            });
+            let code =
+                finalize_install_failure(&state, usable, platform_uses_install_journal(), || {
+                    if discard_ok {
+                        Ok(true)
+                    } else {
+                        Err("update_state_unavailable".into())
+                    }
+                });
             let result = tauri::async_runtime::block_on(state.run_automatic_update(
                 "stable",
                 async { Err::<Option<()>, String>(code.into()) },
@@ -1733,11 +1761,11 @@ mod tests {
             ));
             assert_eq!(result.unwrap_err(), code);
             assert_eq!(state.last_failure.lock().unwrap()["details"]["code"], code);
-            if usable && discard_ok && prepared {
+            if usable && prepared && (discard_ok || !platform_uses_install_journal()) {
                 assert_eq!(state.status_snapshot()["phase"], "connecting");
                 assert_eq!(
                     state.last_failure.lock().unwrap()["details"]["journal_discarded"],
-                    true
+                    platform_uses_install_journal()
                 );
                 assert_eq!(state.reconcile_services(|| Ok(())).unwrap(), Some(()));
             } else {

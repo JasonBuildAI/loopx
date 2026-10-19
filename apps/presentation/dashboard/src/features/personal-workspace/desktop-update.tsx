@@ -145,7 +145,7 @@ export function DesktopUpdate() {
   const message: Record<Phase, string> = {
     service_error: phaseMessage(zh ? "运行时已安装，但服务尚未连接。可重试更新、修复或恢复上版。" : "Runtime installed, but services are unavailable. Retry updates, repair, or restore the previous version.", zh ? "运行时已安装，但服务尚未连接。可检查更新；连接仍会自动重试。" : "Runtime installed, but services are unavailable. Check for updates; the connection keeps retrying."),
     runtime_pairing_required: zh ? "旧版启动器未能自动选择可用组件。请检查 App 更新，或通过恢复入口重新连接。" : "The older launcher could not select a usable runtime. Check for an App update or reconnect through recovery.",
-    idle: zh ? "先打开本地版本，更新在后台准备，下次打开时生效。也可在此手动更新。" : "Open the local version first. Updates prepare in the background and apply on the next open. You can also update here.",
+    idle: zh ? "App 会在当前通道自动更新：已准备的更新在下次打开时安装，Windows 版在启动时检查并安装。也可在此手动更新。" : "The App updates itself on this channel: a prepared update installs on the next open, and the Windows App checks and installs at launch. You can also update here.",
     runtime_required: phaseMessage(zh ? "请完成匹配组件安装，或检查 App 更新。" : "Install matching components or check for an App update.", zh ? "无法准备可用组件。可检查 App 更新；当前安装仍会保留。" : "Components are unavailable. Check for an App update; the current installation is kept."),
     connecting: zh ? "正在连接本地服务…" : "Connecting to local services…",
     checking: state.details?.background ? (zh ? "正在后台检查更新，当前版本可继续使用。" : "Checking in the background. Keep using this version.") : (zh ? "正在检查更新…" : "Checking for updates…"),

@@ -920,6 +920,8 @@ def _recover_runtime_info(
             params={},
             timeout=RUNTIME_LOCATOR_RECOVERY_TIMEOUT_SECONDS,
         )
+    except EffectRuntimeHostPermissionError:
+        raise
     except (OSError, RuntimeError):
         return None
     result = response.get("result")
@@ -1395,27 +1397,24 @@ def collect_effect_runtime_readiness(*, deep: bool = False) -> dict[str, object]
     locator_state: _RuntimeLocatorState = "missing"
     recorded_pid_alive: bool | None = None
     host_permission_error: EffectRuntimeHostPermissionError | None = None
-    if ready:
-        try:
-            fingerprint = _runtime_fingerprint()
-            (
-                locator_state,
-                recorded_pid_alive,
-                locator_read_diagnostic,
-                info,
-            ) = _inspect_runtime_locator(fingerprint, recover=True)
-            runtime_diagnostic_code = (
-                locator_read_diagnostic or runtime_diagnostic_code
-            )
-            runtime_state = "running" if info is not None else "stopped"
-            runtime_identity = runtime_identity_from_info(info)
-        except EffectRuntimeHostPermissionError as exc:
+    locator_info: dict[str, Any] | None = None
+    try:
+        fingerprint = _runtime_fingerprint()
+        (
+            locator_state,
+            recorded_pid_alive,
+            locator_read_diagnostic,
+            locator_info,
+        ) = _inspect_runtime_locator(fingerprint, recover=True)
+    except EffectRuntimeHostPermissionError as exc:
+        locator_state = "invalid"
+        if ready:
             ready = False
             status = "probe_failed"
-            locator_state = "invalid"
             runtime_diagnostic_code = exc.diagnostic_code
             host_permission_error = exc
-        except (OSError, EffectRuntimeStartupError) as exc:
+    except (OSError, EffectRuntimeStartupError) as exc:
+        if ready:
             ready = False
             status = "package_invalid"
             runtime_diagnostic_code = getattr(
@@ -1423,6 +1422,14 @@ def collect_effect_runtime_readiness(*, deep: bool = False) -> dict[str, object]
                 "diagnostic_code",
                 "packaged_runtime_source_unreadable",
             )
+    else:
+        if ready:
+            runtime_diagnostic_code = (
+                locator_read_diagnostic or runtime_diagnostic_code
+            )
+    if ready:
+        runtime_state = "running" if locator_info is not None else "stopped"
+        runtime_identity = runtime_identity_from_info(locator_info)
     runtime_lifecycle: dict[str, object] = {
         "schema_version": "loopx_effect_runtime_lifecycle_v0",
         "management": "on_demand_managed",

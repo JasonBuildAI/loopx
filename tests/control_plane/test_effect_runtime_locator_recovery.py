@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 import subprocess
 import sys
 import time
@@ -10,6 +11,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from loopx.control_plane import effect_runtime
+from loopx.control_plane.runtime.node_probe import NodeProbe, NodeProbeOutcome
 from loopx.doctor import render_doctor_markdown
 
 
@@ -215,3 +217,37 @@ def test_generic_locator_read_error_does_not_look_absent(
     assert lifecycle["recorded_pid_alive"] is None
     assert lifecycle["diagnostic_code"] == "runtime_locator_unreadable"
     assert "private read details" not in json.dumps(readiness)
+
+
+def test_readiness_reports_a_live_locator_when_node_is_unavailable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _isolate_runtime(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        effect_runtime, "_probe_node", lambda **_: NodeProbe(NodeProbeOutcome.MISSING),
+    )
+    fingerprint = effect_runtime._runtime_fingerprint()
+    info_path = effect_runtime._runtime_info_path(fingerprint)
+    info_path.parent.mkdir(parents=True)
+    info_path.write_text(
+        json.dumps({
+            "schema_version": effect_runtime.EFFECT_RUNTIME_INFO_SCHEMA_VERSION,
+            "fingerprint": fingerprint,
+            "host": "127.0.0.1",
+            "port": 1,
+            "token": "fixture-token",
+            "pid": os.getpid(),
+        }),
+        encoding="utf-8",
+    )
+
+    readiness = effect_runtime.collect_effect_runtime_readiness()
+
+    lifecycle = readiness["runtime_lifecycle"]
+    assert readiness["ready"] is False
+    assert readiness["status"] == "missing"
+    assert lifecycle["state"] == "unavailable"
+    assert lifecycle["locator_state"] == "valid"
+    assert lifecycle["recorded_pid_alive"] is True
+    assert lifecycle["diagnostic_code"] == "node_unavailable"

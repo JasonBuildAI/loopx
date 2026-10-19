@@ -5,7 +5,7 @@ import { useWorkspaceI18n } from "./i18n";
 type Phase = "idle" | "runtime_required" | "runtime_pairing_required" | "connecting" | "service_error" | "checking" | "available" | "up_to_date" | "downloading" | "installing_app" | "installing_runtime" | "restart_required" | "ready" | "error";
 type UpdateState = { phase: Phase; details?: { version?: string; channel?: string; received?: number; total?: number; code?: string; background?: boolean; prepared?: boolean } };
 type RuntimeSelection = { explicit?: boolean; remembered?: boolean; bundled_repair_available?: boolean };
-type UpdateStatus = { state: UpdateState | null; app_version: string; rollback_available?: boolean; runtime_selection?: RuntimeSelection };
+type UpdateStatus = { state: UpdateState | null; app_version: string; platform?: string; rollback_available?: boolean; runtime_selection?: RuntimeSelection };
 type DesktopWindow = Window & { __TAURI__?: { core: { invoke: <T>(command: string, args?: Record<string, string>) => Promise<T> } } };
 const workingPhases: Phase[] = ["checking", "connecting", "downloading", "installing_app", "installing_runtime"];
 
@@ -36,6 +36,7 @@ export function DesktopUpdate() {
   const [open, setOpen] = useState(false);
   const panel = useRef<HTMLElement>(null);
   const [channel, setChannel] = useState("stable");
+  const [platform, setPlatform] = useState("");
   const [state, setState] = useState<UpdateState>({ phase: "idle" });
   const [version, setVersion] = useState("");
   const [rollbackAvailable, setRollbackAvailable] = useState(false);
@@ -51,6 +52,7 @@ export function DesktopUpdate() {
 
   function readStatus(value: UpdateStatus, includeState = true) {
     setVersion(value.app_version);
+    setPlatform(value.platform ?? "");
     setRollbackAvailable(value.rollback_available === true);
     setRuntimeSelection(value.runtime_selection);
     if (includeState && value.state?.phase) setState(value.state);
@@ -142,10 +144,25 @@ export function DesktopUpdate() {
   // or a separately managed runtime), the copy must not name the disabled
   // repair action or promise a combined App-and-runtime update.
   const phaseMessage = (repaired: string, unrepaired: string) => (repairAvailable ? repaired : unrepaired);
+  // The feed publishes Windows NSIS updates on the main preview channel only
+  // (stable and MSI installs keep the manual installer path), so the idle copy
+  // must scope the launch-time promise to that channel instead of the host OS
+  // alone. Read the host OS from the native status projection.
+  const idleMessage = () => {
+    if (platform === "windows") {
+      return channel === "main"
+        ? (zh ? "main 预览版会在启动时检查并安装已签名的 Windows NSIS 更新；也可在此手动检查或安装。" : "The Windows main preview checks for and installs signed NSIS updates at launch. You can also check or install here.")
+        : (zh ? "Windows 稳定版与 MSI 安装需手动运行新的签名安装包；App 内自动更新目前只在 main 预览通道提供（NSIS）。" : "Windows stable and MSI installs update by running a newer signed installer; in-App automatic updates currently ship on the main preview channel (NSIS).");
+    }
+    if (platform === "macos") {
+      return zh ? "App 会在当前通道自动更新：已准备的更新在下次打开时安装。也可在此手动更新。" : "The App updates itself on this channel: a prepared update installs on the next open. You can also update here.";
+    }
+    return zh ? "更新会跟随所选通道；请检查更新以确认本机是否有可用安装包。" : "Updates follow the selected channel; check for updates to see whether this machine has an installer.";
+  };
   const message: Record<Phase, string> = {
     service_error: phaseMessage(zh ? "运行时已安装，但服务尚未连接。可重试更新、修复或恢复上版。" : "Runtime installed, but services are unavailable. Retry updates, repair, or restore the previous version.", zh ? "运行时已安装，但服务尚未连接。可检查更新；连接仍会自动重试。" : "Runtime installed, but services are unavailable. Check for updates; the connection keeps retrying."),
     runtime_pairing_required: zh ? "旧版启动器未能自动选择可用组件。请检查 App 更新，或通过恢复入口重新连接。" : "The older launcher could not select a usable runtime. Check for an App update or reconnect through recovery.",
-    idle: zh ? "App 会在当前通道自动更新：已准备的更新在下次打开时安装，Windows 版在启动时检查并安装。也可在此手动更新。" : "The App updates itself on this channel: a prepared update installs on the next open, and the Windows App checks and installs at launch. You can also update here.",
+    idle: idleMessage(),
     runtime_required: phaseMessage(zh ? "请完成匹配组件安装，或检查 App 更新。" : "Install matching components or check for an App update.", zh ? "无法准备可用组件。可检查 App 更新；当前安装仍会保留。" : "Components are unavailable. Check for an App update; the current installation is kept."),
     connecting: zh ? "正在连接本地服务…" : "Connecting to local services…",
     checking: state.details?.background ? (zh ? "正在后台检查更新，当前版本可继续使用。" : "Checking in the background. Keep using this version.") : (zh ? "正在检查更新…" : "Checking for updates…"),

@@ -47,6 +47,7 @@ try {
   let checkUpToDate = false;
   let statusFailure = false;
   let environmentTelemetry = null;
+  let platform = "macos";
   let delayedStatus = null;
   function delayNextStatus(phase) {
     delayedStatus = {
@@ -65,6 +66,7 @@ try {
         runtime_selection: structuredClone(nativeRuntimeSelection),
         startup: structuredClone(startupTiming),
         app_version: "0.5.4",
+        platform,
         rollback_available: rollbackAvailable,
         environment: structuredClone(environmentTelemetry),
       };
@@ -314,11 +316,37 @@ try {
   assert.equal(await page.getByRole("button", { name: "确认恢复上版", exact: true }).isEnabled(), false);
   nativeActionDelayMs = 150;
   nativeState = { phase: "idle", details: {} };
+  platform = "macos";
   await page.reload();
   await page.getByRole("button", { name: "更新 LoopX", exact: true }).click();
-  await page.getByText(/已准备的更新在下次打开时安装，Windows 版在启动时检查并安装/).waitFor();
+  await page.getByText(/已准备的更新在下次打开时安装/).waitFor();
+  const macIdle = await page.locator(".personal-update-panel").getByRole("status").innerText();
+  assert.doesNotMatch(macIdle, /Windows/, "macOS idle copy must not describe the Windows installer path");
   await page.getByText("高级选项", { exact: true }).click();
   assert.equal(await page.getByRole("button", { name: "修复当前版本", exact: true }).isEnabled(), true, "legacy native status retains its available repair action");
+
+  // The feed publishes Windows NSIS updates on main only. Stable must name the
+  // manual installer path; main may promise the launch-time installation.
+  platform = "windows";
+  nativeState = { phase: "idle", details: {} };
+  await page.reload();
+  await page.getByRole("button", { name: "更新 LoopX", exact: true }).click();
+  const stableIdle = page.locator(".personal-update-panel").getByRole("status");
+  await page.getByText(/Windows 稳定版与 MSI 安装需手动运行新的签名安装包/).waitFor();
+  assert.doesNotMatch(await stableIdle.innerText(), /启动时检查并安装/, "stable must not promise launch-time installation");
+  await page.screenshot({ path: resolve(output, "update-idle-windows-stable.png") });
+  nativeState = { phase: "idle", details: { channel: "main" } };
+  await page.reload();
+  await page.getByRole("button", { name: "更新 LoopX", exact: true }).click();
+  await page.getByText(/main 预览版会在启动时检查并安装已签名的 Windows NSIS 更新/).waitFor();
+  await page.getByText("0.5.4 · main 预览版", { exact: true }).waitFor();
+  nativeState = { phase: "idle", details: {} };
+  await page.evaluate(() => localStorage.setItem("loopx-pw-locale", "en"));
+  await page.reload();
+  await page.getByRole("button", { name: "Update LoopX", exact: true }).click();
+  await page.getByText(/in-App automatic updates currently ship on the main preview channel/).waitFor();
+  await page.evaluate(() => localStorage.setItem("loopx-pw-locale", "zh-CN"));
+  platform = "macos";
 
   // The Windows release cannot reinstall its bundled runtime or roll back:
   // copy for states without a dedicated code must stop naming those controls.

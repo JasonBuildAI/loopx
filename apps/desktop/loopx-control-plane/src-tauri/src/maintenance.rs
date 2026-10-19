@@ -495,12 +495,16 @@ pub fn desktop_update_status(app: AppHandle, state: State<'_, Maintenance>) -> V
     });
     let rollback_available = crate::update_backup::available(&app);
     let app_version = app.package_info().version.to_string();
+    // The panel keeps its channel copy truthful from this projection: Windows
+    // NSIS updates ship on the main preview channel, while the stable channel
+    // and MSI installs keep the manual installer path.
+    let platform = std::env::consts::OS;
     let startup = state.startup_timing();
     // Read mutable transaction state after the potentially blocking
     // diagnostics so this response cannot revive a superseded phase.
     let snapshot = state.status_snapshot();
     let last_failure = state.last_failure.lock().unwrap().clone();
-    json!({"state": snapshot, "startup": startup, "last_failure": last_failure, "app_version": app_version, "runtime": runtime, "runtime_selection": runtime_selection, "rollback_available": rollback_available, "environment": environment})
+    json!({"state": snapshot, "startup": startup, "last_failure": last_failure, "app_version": app_version, "platform": platform, "runtime": runtime, "runtime_selection": runtime_selection, "rollback_available": rollback_available, "environment": environment})
 }
 // The signed App-update journey ships on macOS and Windows; other platforms
 // keep the explicit unsupported error.

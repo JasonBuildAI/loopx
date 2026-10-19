@@ -1,4 +1,5 @@
 """Fail closed before advertising incomplete updates."""
+import base64
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -15,6 +16,11 @@ WORKFLOW = (
     / "workflows"
     / "desktop-updater.yml"
 )
+# What Tauri signs with: base64 of a minisign signature whose first line is
+# an untrusted comment. Matches the shape of published channel signatures.
+TEST_SIGNATURE = base64.b64encode(
+    b"untrusted comment: signature from tauri secret key\nRWQexample\n"
+).decode("ascii")
 
 
 class FeedTests(unittest.TestCase):
@@ -103,6 +109,54 @@ class FeedTests(unittest.TestCase):
         self.assertIn('--channel "$CHANNEL"', feed_step)
         self.assertIn("CHANNEL: ${{ needs.identity.outputs.channel }}", feed_step)
 
+    def test_workflow_gates_the_signed_windows_build_and_checks_its_version(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        macos_step = workflow.split(
+            "- name: Build signed macOS App and exact bundled runtime", 1
+        )[1].split("- name: Build signed Windows NSIS updater installer", 1)[0]
+        windows_step = workflow.split(
+            "- name: Build signed Windows NSIS updater installer", 1
+        )[1].split("- name: Collect native updater artifacts", 1)[0]
+        self.assertIn("if: runner.os == 'macOS'", macos_step)
+        self.assertIn('\\"createUpdaterArtifacts\\":true', macos_step)
+        self.assertIn('\\"signingIdentity\\":\\"-\\"', macos_step)
+        self.assertIn("if: runner.os == 'Windows'", windows_step)
+        self.assertIn('\\"createUpdaterArtifacts\\":true', windows_step)
+        self.assertNotIn("signingIdentity", windows_step)
+        collect_step = workflow.split(
+            "- name: Collect native updater artifacts", 1
+        )[1].split("- uses: actions/upload-artifact", 1)[0]
+        self.assertIn("-updater-setup.exe", collect_step)
+        self.assertIn('ls dist/updater/*"$VERSION"*-updater-setup.exe', collect_step)
+        self.assertIn("VERSION: ${{ needs.identity.outputs.version }}", collect_step)
+
+    def test_workflow_pointer_upload_stays_inside_the_advance_branch(self):
+        publish = WORKFLOW.read_text(encoding="utf-8").split(
+            "- name: Upload immutable artifacts, publish channel pointer last", 1
+        )[1]
+        lines = publish.splitlines()
+        branch = next(
+            index
+            for index, line in enumerate(lines)
+            if 'if [ "$decision" = advance ]; then' in line
+        )
+        upload = next(
+            index
+            for index, line in enumerate(lines)
+            if 'gh release upload "$pointer"' in line
+        )
+        closing = next(
+            index
+            for index, line in enumerate(lines[upload:], start=upload)
+            if line.strip() == "fi"
+        )
+
+        def indentation(line):
+            return len(line) - len(line.lstrip())
+
+        self.assertGreater(indentation(lines[upload]), indentation(lines[branch]))
+        self.assertEqual(indentation(lines[closing]), indentation(lines[branch]))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -110,13 +164,13 @@ class FeedTests(unittest.TestCase):
         self.artifact = self.root / "LoopX.app.tar.gz"
         self.artifact.write_bytes(b"test archive")
         self.signature = self.root / "LoopX.app.tar.gz.sig"
-        self.signature.write_text("test signature")
+        self.signature.write_text(TEST_SIGNATURE)
         self.windows = self.root / "LoopX_0.0.0-main.123.1_x64-updater-setup.exe"
         self.windows.write_bytes(b"test installer")
         self.windows_signature = (
             self.root / "LoopX_0.0.0-main.123.1_x64-updater-setup.exe.sig"
         )
-        self.windows_signature.write_text("test signature")
+        self.windows_signature.write_text(TEST_SIGNATURE)
 
     def build(self):
         return feed.build(self.root, "0.0.0-main.123.1", "desktop-main-123-1", "main")
@@ -177,6 +231,22 @@ class FeedTests(unittest.TestCase):
         self.signature.write_text(" \n")
         with self.assertRaises(ValueError):
             self.build()
+
+    def test_malformed_signature_fails_closed(self):
+        for case, content in [
+            ("not base64", "signature from tauri secret key"),
+            ("wrong decoded contents", base64.b64encode(b"hello world").decode("ascii")),
+            ("broken padding", TEST_SIGNATURE[:-1]),
+        ]:
+            with self.subTest(case=case):
+                self.signature.write_text(content)
+                with self.assertRaises(ValueError):
+                    self.build()
+                self.windows_signature.write_text(content)
+                with self.assertRaises(ValueError):
+                    self.build()
+                self.windows_signature.write_text(TEST_SIGNATURE)
+        self.signature.write_text(TEST_SIGNATURE)
 
     def test_untrusted_version_or_tag(self):
         for version, tag in [("v1.0.0", "valid"), ("1.0.0", "../main"), ("1.0.0;command", "main")]:

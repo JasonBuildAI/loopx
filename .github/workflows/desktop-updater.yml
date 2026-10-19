@@ -124,12 +124,25 @@ jobs:
           npm run build -- --bundles "$BUNDLE" --config "{\"version\":\"$VERSION\",\"bundle\":{\"createUpdaterArtifacts\":true}}"
       - name: Collect native updater artifacts
         shell: bash
+        env:
+          VERSION: ${{ needs.identity.outputs.version }}
         run: |
           mkdir -p dist/updater
           find apps/desktop/loopx-control-plane/src-tauri/target/release/bundle -type f \( -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' -o -name '*-setup.exe' -o -name '*-setup.exe.sig' \) -exec cp {} dist/updater/ \;
           for artifact in dist/updater/*-setup.exe*; do
-            if [ -f "$artifact" ]; then mv "$artifact" "${artifact/-setup.exe/-updater-setup.exe}"; fi
+            if [ -f "$artifact" ]; then
+              case "$artifact" in
+                *-updater-setup.exe*) continue ;;
+              esac
+              mv "$artifact" "${artifact/-setup.exe/-updater-setup.exe}"
+            fi
           done
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            # The feed advertises this run's version. An installer whose name
+            # does not embed it would be published under a version it does not
+            # carry, and clients would never update again.
+            ls dist/updater/*"$VERSION"*-updater-setup.exe >/dev/null
+          fi
       - uses: actions/upload-artifact@v7
         with:
           name: signed-updater-${{ matrix.runner }}

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Publish a complete native updater feed only after all signed artifacts exist."""
 import argparse
+import base64
+import binascii
 import json
 import re
 from pathlib import Path
@@ -12,8 +14,13 @@ MAIN_VERSION = re.compile(r"0\.0\.0-main\.(\d+)\.(\d+)")
 
 # Publish only platforms with a qualified signed update artifact for the
 # channel. Windows NSIS updates ship on the main channel first; the stable
-# channel keeps manual Windows installs until that rollout is approved. Keys
-# follow the pinned updater's `{os}-{arch}-{installer}` lookup.
+# channel keeps manual Windows installs until that rollout is approved.
+# Keys follow the pinned updater's `{os}-{arch}-{installer}` lookup in
+# tauri-plugin-updater 2.11.0, whose installer component comes from the
+# bundle-type marker the NSIS install carries. Do not add the bare
+# `windows-x86_64` fallback key until MSI installs are qualified: the updater
+# consults that key for every Windows installer kind, so it would offer the
+# NSIS installer to MSI installs as well.
 QUALIFIED_PLATFORMS = {
     "main": (
         ("darwin-aarch64", ".app.tar.gz"),
@@ -26,6 +33,25 @@ QUALIFIED_PLATFORMS = {
 def release_channel(tag: str, prerelease: bool) -> str:
     """Only core stable releases may advance the desktop stable pointer."""
     return "stable" if not prerelease and re.fullmatch(r"v\d+\.\d+\.\d+", tag) else "skip"
+
+
+def _minisign_signature(path: Path) -> str:
+    """Publish only a signature the pinned updater can parse.
+
+    The client base64-decodes the .sig file and reads a minisign signature
+    whose first line is an untrusted comment. A truncated or mismatched file
+    must fail here, not after the client has downloaded the artifact.
+    """
+    encoded = path.read_text(encoding="utf-8").strip()
+    if not encoded:
+        raise ValueError(f"missing signature: {path.name}")
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError(f"invalid signature encoding: {path.name}") from error
+    if not decoded.startswith(b"untrusted comment: "):
+        raise ValueError(f"invalid signature contents: {path.name}")
+    return encoded
 
 
 def _channel_version_key(channel: str, value: object) -> tuple[int, ...]:
@@ -63,9 +89,7 @@ def build(directory: Path, version: str, tag: str, channel: str) -> dict:
         if len(matches) != 1 or matches[0].stat().st_size == 0:
             raise ValueError(f"missing or ambiguous artifact: {platform}")
         artifact = matches[0]
-        signature = artifact.with_name(artifact.name + ".sig").read_text().strip()
-        if not signature:
-            raise ValueError(f"missing signature: {platform}")
+        signature = _minisign_signature(artifact.with_name(artifact.name + ".sig"))
         platforms[platform] = {
             "url": f"https://github.com/loopx-project/loopx/releases/download/{quote(tag)}/{quote(artifact.name)}",
             "signature": signature,

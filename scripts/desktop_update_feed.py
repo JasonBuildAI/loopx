@@ -10,6 +10,18 @@ from urllib.parse import quote
 STABLE_VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 MAIN_VERSION = re.compile(r"0\.0\.0-main\.(\d+)\.(\d+)")
 
+# Publish only platforms with a qualified signed update artifact for the
+# channel. Windows NSIS updates ship on the main channel first; the stable
+# channel keeps manual Windows installs until that rollout is approved. Keys
+# follow the pinned updater's `{os}-{arch}-{installer}` lookup.
+QUALIFIED_PLATFORMS = {
+    "main": (
+        ("darwin-aarch64", ".app.tar.gz"),
+        ("windows-x86_64-nsis", "-updater-setup.exe"),
+    ),
+    "stable": (("darwin-aarch64", ".app.tar.gz"),),
+}
+
 
 def release_channel(tag: str, prerelease: bool) -> str:
     """Only core stable releases may advance the desktop stable pointer."""
@@ -38,14 +50,15 @@ def channel_pointer_decision(channel: str, current: object, candidate: object) -
     return "advance" if candidate_key >= current_key else "retain"
 
 
-def build(directory: Path, version: str, tag: str) -> dict:
+def build(directory: Path, version: str, tag: str, channel: str) -> dict:
     if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?", version):
         raise ValueError("invalid desktop version")
     if not re.fullmatch(r"[0-9A-Za-z._-]+", tag):
         raise ValueError("invalid release tag")
+    if channel not in QUALIFIED_PLATFORMS:
+        raise ValueError("unsupported desktop update channel")
     platforms = {}
-    # Publish only platforms with a qualified bundled-runtime installer.
-    for platform, suffix in (("darwin-aarch64", ".app.tar.gz"),):
+    for platform, suffix in QUALIFIED_PLATFORMS[channel]:
         matches = list(directory.glob(f"*{suffix}"))
         if len(matches) != 1 or matches[0].stat().st_size == 0:
             raise ValueError(f"missing or ambiguous artifact: {platform}")
@@ -67,6 +80,7 @@ if __name__ == "__main__":
     parser.add_argument("--tag")
     parser.add_argument("--classify-release")
     parser.add_argument("--prerelease", choices=("true", "false"), default="false")
+    parser.add_argument("--channel", choices=("main", "stable"))
     parser.add_argument("--channel-pointer-decision", choices=("stable", "main"))
     parser.add_argument("--current-feed", type=Path)
     parser.add_argument("--candidate-feed", type=Path)
@@ -87,7 +101,9 @@ if __name__ == "__main__":
         raise SystemExit(0)
     if args.directory is None or args.version is None or args.tag is None:
         parser.error("--directory, --version and --tag are required to build a feed")
-    output = build(args.directory, args.version, args.tag)
+    if args.channel is None:
+        parser.error("--channel is required to build a feed")
+    output = build(args.directory, args.version, args.tag, args.channel)
     (args.directory / "desktop-updater.json").write_text(
         json.dumps(output, indent=2) + "\n", encoding="utf-8"
     )

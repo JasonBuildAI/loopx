@@ -21,6 +21,7 @@ const updateErrors: Record<string, [string, string]> = {
   update_feed_unavailable: ["此通道的更新源尚未就绪或暂时不可用。可稍后重新检查，当前版本仍可继续使用。", "This channel's update feed is not ready or temporarily unavailable. Check again later; you can keep using this version."],
   update_feed_invalid: ["更新源格式异常。请稍后重新检查。", "The update feed is invalid. Check again later."],
   update_platform_unavailable: ["此通道尚无适用于本机的更新包。", "This channel has no update package for this platform."],
+  update_action_platform_unavailable: ["当前平台暂不支持该恢复操作：Windows 版 App 仅提供更新检查与安装。", "This recovery action is unavailable on this platform; the Windows App supports update checks and installation only."],
   update_check_timeout: ["检查更新超时。请稍后重试。", "The update check timed out. Try again later."],
   update_network_failed: ["无法连接更新服务器。请检查网络后重试。", "Cannot reach the update server. Check your connection and retry."],
   update_download_or_signature_failed: ["更新包下载或签名校验失败，尚未安装。请重新检查更新。", "Download or signature verification failed; the update was not installed. Check for updates again."],

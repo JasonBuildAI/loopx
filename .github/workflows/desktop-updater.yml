@@ -76,6 +76,8 @@ jobs:
         include:
           - runner: macos-15
             bundle: app
+          - runner: windows-latest
+            bundle: nsis
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
@@ -94,7 +96,8 @@ jobs:
           workspaces: apps/desktop/loopx-control-plane/src-tauri -> target
       - run: npm ci
         working-directory: apps/desktop/loopx-control-plane
-      - name: Build signed App and exact bundled runtime
+      - name: Build signed macOS App and exact bundled runtime
+        if: runner.os == 'macOS'
         working-directory: apps/desktop/loopx-control-plane
         shell: bash
         env:
@@ -106,6 +109,19 @@ jobs:
           set -euo pipefail
           test -n "$TAURI_SIGNING_PRIVATE_KEY"
           npm run build -- --bundles "$BUNDLE" --config "{\"version\":\"$VERSION\",\"bundle\":{\"createUpdaterArtifacts\":true,\"macOS\":{\"signingIdentity\":\"-\"}}}"
+      - name: Build signed Windows NSIS updater installer
+        if: runner.os == 'Windows'
+        working-directory: apps/desktop/loopx-control-plane
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          VERSION: ${{ needs.identity.outputs.version }}
+          BUNDLE: ${{ matrix.bundle }}
+        run: |
+          set -euo pipefail
+          test -n "$TAURI_SIGNING_PRIVATE_KEY"
+          npm run build -- --bundles "$BUNDLE" --config "{\"version\":\"$VERSION\",\"bundle\":{\"createUpdaterArtifacts\":true}}"
       - name: Collect native updater artifacts
         shell: bash
         run: |
@@ -137,7 +153,8 @@ jobs:
         env:
           VERSION: ${{ needs.identity.outputs.version }}
           RELEASE_TAG: ${{ needs.identity.outputs.tag }}
-        run: python scripts/desktop_update_feed.py --directory dist/updater --version "$VERSION" --tag "$RELEASE_TAG"
+          CHANNEL: ${{ needs.identity.outputs.channel }}
+        run: python scripts/desktop_update_feed.py --directory dist/updater --version "$VERSION" --tag "$RELEASE_TAG" --channel "$CHANNEL"
       - name: Upload immutable artifacts, publish channel pointer last
         env:
           GH_TOKEN: ${{ github.token }}
@@ -150,7 +167,7 @@ jobs:
           if [ "$EVENT_NAME" != release ]; then
             gh release create "$RELEASE_TAG" --prerelease --target "$SOURCE_REF" --title "Desktop main $SOURCE_REF" --notes "Signed App and matching runtime preview."
           fi
-          for artifact in dist/updater/*.gz dist/updater/*.sig; do
+          for artifact in dist/updater/*.gz dist/updater/*.sig dist/updater/*.exe; do
             gh release upload "$RELEASE_TAG" "$artifact"
           done
           gh release upload "$RELEASE_TAG" dist/updater/desktop-updater.json --clobber

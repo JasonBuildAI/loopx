@@ -462,7 +462,10 @@ pub fn desktop_update_status(app: AppHandle, state: State<'_, Maintenance>) -> V
     let runtime_selection = json!({
         "explicit": selection.as_ref().is_some_and(|selected| selected.environment_override),
         "remembered": selection.as_ref().is_some_and(|selected| selected.explicit),
-        "bundled_repair_available": selection.is_some()
+        // The App-owned bundled runtime and its repair are macOS capabilities;
+        // Windows desktop keeps using the separately installed CLI.
+        "bundled_repair_available": cfg!(target_os = "macos")
+            && selection.is_some()
             && bundled_runtime::repair_resources_available(&app)
             && !state.separately_managed_runtime.load(Ordering::Acquire),
     });
@@ -475,13 +478,32 @@ pub fn desktop_update_status(app: AppHandle, state: State<'_, Maintenance>) -> V
     let last_failure = state.last_failure.lock().unwrap().clone();
     json!({"state": snapshot, "startup": startup, "last_failure": last_failure, "app_version": app_version, "runtime": runtime, "runtime_selection": runtime_selection, "rollback_available": rollback_available, "environment": environment})
 }
+// The signed App-update journey ships on macOS and Windows; other platforms
+// keep the explicit unsupported error.
+fn app_update_platform_supported() -> bool {
+    cfg!(target_os = "macos") || cfg!(target_os = "windows")
+}
+
+// Action availability on a supported platform: Windows ships the signed
+// App-update journey (check/install/restart and its recovery), while the
+// macOS bundled-runtime repair and verified-backup rollback stay macOS-only.
+// Windows rollback and repair report an explicit unavailable state instead
+// of a half-built install path.
+fn app_update_action_supported(action: &str) -> bool {
+    !cfg!(target_os = "windows")
+        || matches!(
+            action,
+            "check" | "apply" | "forget_runtime_selection" | "restart"
+        )
+}
+
 #[tauri::command]
 pub async fn desktop_update(
     app: AppHandle,
     action: String,
     channel: String,
 ) -> Result<Value, String> {
-    if cfg!(dev) || !cfg!(target_os = "macos") {
+    if cfg!(dev) || !app_update_platform_supported() {
         return Err("platform_update_not_supported".into());
     }
     let url = endpoint(&channel)?;
@@ -496,6 +518,9 @@ pub async fn desktop_update(
             | "rollback"
     ) {
         return Err("invalid_update_action".into());
+    }
+    if !app_update_action_supported(&action) {
+        return Err("update_action_platform_unavailable".into());
     }
     let state = app.state::<Maintenance>();
     let _guard = state.acquire()?;
@@ -739,13 +764,14 @@ async fn install_verified_app(
         .map_err(|_| "app_install_failed".to_string())
         .and_then(|result| result);
     if installed.is_err() {
-        // The pinned macOS installer renames the old App away before moving
-        // the new one in, so a failed install does not by itself prove the
-        // previously installed App is still in place. Only a verified
-        // previous App (bundle intact, a qualified runtime available) may
-        // discard the journal and promise a safe restart; anything else keeps
-        // the journal and surfaces the distinct recovery state so the
-        // verified backup remains the rollback path.
+        // A failed install does not by itself prove the previously installed
+        // App is still in place: on macOS the pinned installer renames the old
+        // App away before moving the new one in. Only a verified previous App
+        // (bundle intact, a qualified runtime available) may discard the
+        // journal and promise a safe restart; anything else keeps the journal
+        // and surfaces the distinct recovery state so the verified backup
+        // remains the rollback path. Windows verifies the running executable
+        // instead -- see failed_install_left_previous_app_usable.
         return Err(finalize_install_failure(
             &state,
             failed_install_left_previous_app_usable(app),
@@ -761,6 +787,7 @@ async fn install_verified_app(
     *state.pending.lock().unwrap() = None;
     Ok(state.complete_app_replacement(json!({"version":target})))
 }
+#[cfg(not(target_os = "windows"))]
 // A safe-restart promise after a failed app replacement requires the running
 // App's bundle to still be present -- the pinned macOS updater's install_inner
 // performs rename(old App -> temporary) before rename(new App -> original), so
@@ -791,11 +818,22 @@ fn failed_install_left_previous_app_usable(app: &AppHandle) -> bool {
     )
 }
 
+#[cfg(target_os = "windows")]
+// The Windows installer only runs after the plugin's ShellExecuteW launch
+// succeeds, and the plugin exits the process at that point; an install error
+// therefore means the installer never launched and the previously installed
+// App was never touched. The running executable still being present is the
+// layout-level guard for the safe-restart promise.
+fn failed_install_left_previous_app_usable(_app: &AppHandle) -> bool {
+    std::env::current_exe().is_ok_and(|executable| executable.is_file())
+}
+
 // Path-level safe-restart predicate shared by the release failure path and
 // tests: the actual installed target (located from the executable, never a
 // caller path) must verify layout AND codesign integrity, and the installed
 // runtime must have a qualified identity. Unverified keeps the
 // journal and the `app_install_incomplete` recovery state.
+#[cfg(not(target_os = "windows"))]
 fn previous_installation_is_usable(
     executable: &std::path::Path,
     bundled: Option<&Value>,
@@ -1011,7 +1049,7 @@ fn resume_runtime(app: &AppHandle) -> Result<crate::services::SelectedRuntime, S
 fn automatic_app_update(app: &AppHandle) {
     let state = app.state::<Maintenance>();
     if cfg!(dev)
-        || !cfg!(target_os = "macos")
+        || !app_update_platform_supported()
         || app.config().identifier != "io.loopx.control-plane"
     {
         return;
@@ -1885,6 +1923,20 @@ mod tests {
             assert!(allow_action("restart_required", action).is_err());
         }
         assert!(allow_action("restart_required", "restart").is_ok());
+    }
+
+    #[test]
+    fn windows_keeps_the_signed_app_update_journey_without_macos_recovery_actions() {
+        for action in ["check", "apply", "forget_runtime_selection", "restart"] {
+            assert!(app_update_action_supported(action), "{action}");
+        }
+        for action in ["repair", "align_runtime", "rollback"] {
+            assert_eq!(
+                app_update_action_supported(action),
+                !cfg!(target_os = "windows"),
+                "{action} availability is platform-scoped"
+            );
+        }
     }
     #[test]
     fn endpoints_are_closed_and_https() {

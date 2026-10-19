@@ -92,6 +92,17 @@ class FeedTests(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         self.assertIn("already points to an equal or newer build", publish)
 
+    def test_workflow_builds_and_uploads_the_signed_windows_installer(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("runner: windows-latest", workflow)
+        self.assertIn("bundle: nsis", workflow)
+        self.assertIn("dist/updater/*.exe", workflow)
+        feed_step = workflow.split("- name: Generate complete feed", 1)[1].split(
+            "- name: Upload immutable artifacts", 1
+        )[0]
+        self.assertIn('--channel "$CHANNEL"', feed_step)
+        self.assertIn("CHANNEL: ${{ needs.identity.outputs.channel }}", feed_step)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -100,15 +111,52 @@ class FeedTests(unittest.TestCase):
         self.artifact.write_bytes(b"test archive")
         self.signature = self.root / "LoopX.app.tar.gz.sig"
         self.signature.write_text("test signature")
+        self.windows = self.root / "LoopX_0.0.0-main.123.1_x64-updater-setup.exe"
+        self.windows.write_bytes(b"test installer")
+        self.windows_signature = (
+            self.root / "LoopX_0.0.0-main.123.1_x64-updater-setup.exe.sig"
+        )
+        self.windows_signature.write_text("test signature")
 
     def build(self):
-        return feed.build(self.root, "0.0.0-main.123.1", "desktop-main-123-1")
+        return feed.build(self.root, "0.0.0-main.123.1", "desktop-main-123-1", "main")
 
     def test_immutable_source_and_qualified_platform(self):
         result = self.build()
-        self.assertEqual(set(result["platforms"]), {"darwin-aarch64"})
+        self.assertEqual(
+            set(result["platforms"]), {"darwin-aarch64", "windows-x86_64-nsis"}
+        )
         self.assertEqual(result["platforms"]["darwin-aarch64"]["url"],
                          "https://github.com/loopx-project/loopx/releases/download/desktop-main-123-1/LoopX.app.tar.gz")
+        self.assertEqual(
+            result["platforms"]["windows-x86_64-nsis"]["url"],
+            "https://github.com/loopx-project/loopx/releases/download/desktop-main-123-1/LoopX_0.0.0-main.123.1_x64-updater-setup.exe",
+        )
+
+    def test_stable_channel_excludes_windows_until_that_rollout_is_approved(self):
+        # The signed Windows installer is attached to stable releases for
+        # manual installs, but the stable feed must not advertise it yet.
+        result = feed.build(self.root, "1.2.4", "v1.2.4", "stable")
+        self.assertEqual(set(result["platforms"]), {"darwin-aarch64"})
+
+    def test_windows_artifact_fails_closed_on_the_main_channel(self):
+        self.windows.unlink()
+        with self.assertRaises(ValueError):
+            self.build()
+        self.windows.write_bytes(b"")
+        with self.assertRaises(ValueError):
+            self.build()
+        self.windows.write_bytes(b"installer")
+        self.windows_signature.unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.build()
+        self.windows_signature.write_text(" \n")
+        with self.assertRaises(ValueError):
+            self.build()
+
+    def test_unknown_channel_is_rejected(self):
+        with self.assertRaises(ValueError):
+            feed.build(self.root, "0.0.0-main.123.1", "desktop-main-123-1", "nightly")
 
     def test_missing_empty_and_duplicate_artifact(self):
         self.artifact.unlink()
@@ -134,4 +182,4 @@ class FeedTests(unittest.TestCase):
         for version, tag in [("v1.0.0", "valid"), ("1.0.0", "../main"), ("1.0.0;command", "main")]:
             with self.subTest(version=version, tag=tag):
                 with self.assertRaises(ValueError):
-                    feed.build(self.root, version, tag)
+                    feed.build(self.root, version, tag, "main")

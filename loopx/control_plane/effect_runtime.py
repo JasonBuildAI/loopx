@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from threading import Lock
-from typing import IO, Any
+from typing import IO, Any, Literal, TypeAlias
 
 from ..file_lock import process_is_alive
 from .runtime.file_reads import iter_binary_file_reads
@@ -66,6 +66,7 @@ STARTUP_LOCK_TIMEOUT_SECONDS = 15.0
 STARTUP_POLL_SECONDS = 0.025
 RUNTIME_LOCATOR_PERMISSION_RETRIES = 3
 RUNTIME_RETRY_SETTLE_SECONDS = 0.25
+RUNTIME_LOCATOR_RECOVERY_TIMEOUT_SECONDS = 1.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 10.0
 # Canonical writers may wait 30 seconds for the per-Goal maintenance lock and
 # another 5 seconds for the provider lock. Keep the client connected through
@@ -458,7 +459,26 @@ def _start_lock_holder_pid(path: Path) -> int | None:
     return value if value > 0 else None
 
 
-def _read_info(path: Path, *, fingerprint: str | None) -> dict[str, Any] | None:
+_RuntimeLocatorState: TypeAlias = Literal["missing", "valid", "invalid"]
+_RuntimeLocatorDiagnostic: TypeAlias = Literal[
+    "runtime_locator_unreadable",
+    "runtime_locator_schema_mismatch",
+    "runtime_locator_fingerprint_mismatch",
+    "runtime_locator_fields_invalid",
+    "runtime_locator_pid_not_alive",
+]
+
+
+@dataclass(frozen=True)
+class _RuntimeLocatorRead:
+    info: dict[str, Any] | None
+    present: bool
+    diagnostic_code: _RuntimeLocatorDiagnostic | None = None
+    recorded_pid_alive: bool | None = None
+    raw_payload: Mapping[str, Any] | None = None
+
+
+def _inspect_info(path: Path, *, fingerprint: str | None) -> _RuntimeLocatorRead:
     for attempt in range(RUNTIME_LOCATOR_PERMISSION_RETRIES + 1):
         try:
             raw = path.read_text(encoding="utf-8")
@@ -469,34 +489,95 @@ def _read_info(path: Path, *, fingerprint: str | None) -> dict[str, Any] | None:
             # publish the shared filesystem diagnostic through its startup envelope.
             # A short-lived denial can also overlap locator publication/retirement.
             if path.is_dir() and not path.is_symlink():
-                return None
+                return _RuntimeLocatorRead(
+                    info=None,
+                    present=True,
+                    diagnostic_code="runtime_locator_unreadable",
+                )
             if attempt == RUNTIME_LOCATOR_PERMISSION_RETRIES:
                 # Keep symlinks and persistently unreadable metadata on the
                 # host-permission path after the bounded retry window.
                 raise EffectRuntimeHostPermissionError() from exc
             time.sleep(STARTUP_POLL_SECONDS)
+        except UnicodeError:
+            return _RuntimeLocatorRead(
+                info=None,
+                present=True,
+                diagnostic_code="runtime_locator_unreadable",
+            )
         except (FileNotFoundError, OSError):
-            return None
+            return _RuntimeLocatorRead(info=None, present=False)
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError:
-        return None
+        return _RuntimeLocatorRead(
+            info=None,
+            present=True,
+            diagnostic_code="runtime_locator_unreadable",
+        )
     if not isinstance(payload, dict):
-        return None
+        return _RuntimeLocatorRead(
+            info=None,
+            present=True,
+            diagnostic_code="runtime_locator_unreadable",
+        )
+    pid = payload.get("pid")
+    recorded_pid_alive = (
+        _pid_is_alive(pid)
+        if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
+        else None
+    )
+    if payload.get("schema_version") != EFFECT_RUNTIME_INFO_SCHEMA_VERSION:
+        return _RuntimeLocatorRead(
+            info=None,
+            present=True,
+            diagnostic_code="runtime_locator_schema_mismatch",
+            recorded_pid_alive=recorded_pid_alive,
+            raw_payload=payload,
+        )
     if (
-        payload.get("schema_version") != EFFECT_RUNTIME_INFO_SCHEMA_VERSION
-        or (fingerprint is not None and payload.get("fingerprint") != fingerprint)
+        (fingerprint is not None and payload.get("fingerprint") != fingerprint)
         or (fingerprint is None and (
             not isinstance(payload.get("fingerprint"), str)
             or not BARE_SHA256_PATTERN.fullmatch(payload["fingerprint"])
         ))
-        or payload.get("host") != "127.0.0.1"
+    ):
+        return _RuntimeLocatorRead(
+            info=None,
+            present=True,
+            diagnostic_code="runtime_locator_fingerprint_mismatch",
+            recorded_pid_alive=recorded_pid_alive,
+            raw_payload=payload,
+        )
+    if (
+        payload.get("host") != "127.0.0.1"
         or not isinstance(payload.get("port"), int)
         or not isinstance(payload.get("token"), str)
-        or not _pid_is_alive(payload.get("pid"))
     ):
-        return None
-    return payload
+        return _RuntimeLocatorRead(
+            info=None,
+            present=True,
+            diagnostic_code="runtime_locator_fields_invalid",
+            recorded_pid_alive=recorded_pid_alive,
+            raw_payload=payload,
+        )
+    if recorded_pid_alive is not True:
+        return _RuntimeLocatorRead(
+            info=None,
+            present=True,
+            diagnostic_code="runtime_locator_pid_not_alive",
+            recorded_pid_alive=recorded_pid_alive,
+            raw_payload=payload,
+        )
+    return _RuntimeLocatorRead(
+        info=payload,
+        present=True,
+        recorded_pid_alive=True,
+    )
+
+
+def _read_info(path: Path, *, fingerprint: str | None) -> dict[str, Any] | None:
+    return _inspect_info(path, fingerprint=fingerprint).info
 
 
 def _wait_for_runtime_locator_turnover(
@@ -614,7 +695,7 @@ def restart_effect_runtime(*, timeout: float = 5.0, wait_for_exit: bool = False)
 
     fingerprint = _runtime_fingerprint()
     info_path = _runtime_info_path(fingerprint)
-    info = _read_info(info_path, fingerprint=fingerprint)
+    info = _runtime_info_for_request(info_path, fingerprint=fingerprint)
     return _stop_effect_runtime(info_path, info, timeout=timeout, wait_for_process_exit=wait_for_exit)
 
 
@@ -800,6 +881,79 @@ def _request_with_info(
     if response.get("ok") is not True:
         raise _remote_runtime_error(response.get("error"))
     return response
+
+
+def _recover_runtime_info(
+    path: Path,
+    locator: _RuntimeLocatorRead,
+    *,
+    fingerprint: str,
+) -> dict[str, Any] | None:
+    """Reuse a live daemon when its locator bytes are damaged but authenticated."""
+
+    candidate: Mapping[str, Any] | None = locator.info
+    if candidate is None and locator.present:
+        # An invalid locator can still be an identity claim when it retains the
+        # loopback endpoint and token. The authenticated ping below is the
+        # authority; the damaged bytes are never trusted by themselves.
+        candidate = locator.raw_payload
+    if not isinstance(candidate, Mapping):
+        return None
+    if (
+        candidate.get("host") != "127.0.0.1"
+        or not isinstance(candidate.get("port"), int)
+        or not isinstance(candidate.get("token"), str)
+        or locator.recorded_pid_alive is not True
+    ):
+        return None
+    try:
+        response = _request_with_info(
+            candidate,
+            request_id=str(uuid.uuid4()),
+            method="runtime.ping",
+            params={},
+            timeout=RUNTIME_LOCATOR_RECOVERY_TIMEOUT_SECONDS,
+        )
+    except (OSError, RuntimeError):
+        return None
+    result = response.get("result")
+    if (
+        not isinstance(result, Mapping)
+        or result.get("ready") is not True
+        or result.get("pid") != candidate.get("pid")
+        or result.get("fingerprint") != fingerprint
+    ):
+        return None
+    published = result.get("info_path")
+    if isinstance(published, str):
+        try:
+            same_path = os.path.normcase(str(Path(published).resolve())) == os.path.normcase(
+                str(path.resolve())
+            )
+        except OSError:
+            return None
+        if not same_path:
+            return None
+    return {
+        **candidate,
+        "schema_version": EFFECT_RUNTIME_INFO_SCHEMA_VERSION,
+        "fingerprint": fingerprint,
+    }
+
+
+def _runtime_info_for_request(
+    path: Path,
+    *,
+    fingerprint: str,
+) -> dict[str, Any] | None:
+    info = _read_info(path, fingerprint=fingerprint)
+    if info is not None:
+        return info
+    return _recover_runtime_info(
+        path,
+        _inspect_info(path, fingerprint=fingerprint),
+        fingerprint=fingerprint,
+    )
 
 
 def _read_local_snapshot_response(
@@ -1074,7 +1228,7 @@ def effect_runtime_request(
         info: dict[str, Any] | None = None
         try:
             try:
-                info = _read_info(info_path, fingerprint=fingerprint)
+                info = _runtime_info_for_request(info_path, fingerprint=fingerprint)
                 if info is None:
                     info = _start_runtime(fingerprint=fingerprint, info_path=info_path)
             except PermissionError as exc:
@@ -1161,7 +1315,10 @@ def _serving_runtime_identity() -> dict[str, Any] | None:
     """Project the identity of the runtime serving this revision, if any."""
 
     fingerprint = _runtime_fingerprint()
-    info = _read_info(_runtime_info_path(fingerprint), fingerprint=fingerprint)
+    info = _runtime_info_for_request(
+        _runtime_info_path(fingerprint),
+        fingerprint=fingerprint,
+    )
     return runtime_identity_from_info(info)
 
 
@@ -1191,6 +1348,8 @@ def collect_effect_runtime_readiness(*, deep: bool = False) -> dict[str, object]
     runtime_state = "unavailable"
     runtime_diagnostic_code: str | None = probe.diagnostic_code
     runtime_identity: dict[str, Any] | None = None
+    locator_state: _RuntimeLocatorState = "missing"
+    recorded_pid_alive: bool | None = None
     host_permission_error: EffectRuntimeHostPermissionError | None = None
     if ready:
         try:
@@ -1199,6 +1358,22 @@ def collect_effect_runtime_readiness(*, deep: bool = False) -> dict[str, object]
                 _runtime_info_path(fingerprint),
                 fingerprint=fingerprint,
             )
+            if info is not None:
+                locator_state = "valid"
+                recorded_pid_alive = True
+            else:
+                locator = _inspect_info(
+                    _runtime_info_path(fingerprint),
+                    fingerprint=fingerprint,
+                )
+                locator_state = "invalid" if locator.present else "missing"
+                recorded_pid_alive = locator.recorded_pid_alive
+                runtime_diagnostic_code = locator.diagnostic_code or runtime_diagnostic_code
+                info = _recover_runtime_info(
+                    _runtime_info_path(fingerprint),
+                    locator,
+                    fingerprint=fingerprint,
+                )
             runtime_state = "running" if info is not None else "stopped"
             runtime_identity = runtime_identity_from_info(info)
         except EffectRuntimeHostPermissionError as exc:
@@ -1222,6 +1397,8 @@ def collect_effect_runtime_readiness(*, deep: bool = False) -> dict[str, object]
         "restart_policy": "automatic_on_next_control_plane_request",
         "idle_shutdown": True,
         "diagnostic_code": runtime_diagnostic_code,
+        "locator_state": locator_state,
+        "recorded_pid_alive": recorded_pid_alive,
     }
     result: dict[str, object] = {
         "schema_version": EFFECT_RUNTIME_READINESS_SCHEMA_VERSION,

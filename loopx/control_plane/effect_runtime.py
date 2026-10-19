@@ -505,8 +505,14 @@ def _inspect_info(path: Path, *, fingerprint: str | None) -> _RuntimeLocatorRead
                 present=True,
                 diagnostic_code="runtime_locator_unreadable",
             )
-        except (FileNotFoundError, OSError):
+        except FileNotFoundError:
             return _RuntimeLocatorRead(info=None, present=False)
+        except OSError:
+            return _RuntimeLocatorRead(
+                info=None,
+                present=True,
+                diagnostic_code="runtime_locator_unreadable",
+            )
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError:
@@ -956,6 +962,44 @@ def _runtime_info_for_request(
     )
 
 
+def _inspect_runtime_locator(
+    fingerprint: str,
+    *,
+    recover: bool,
+) -> tuple[
+    _RuntimeLocatorState,
+    bool | None,
+    _RuntimeLocatorDiagnostic | None,
+    dict[str, Any] | None,
+]:
+    path = _runtime_info_path(fingerprint)
+    info = _read_info(path, fingerprint=fingerprint)
+    if info is not None:
+        return "valid", True, None, info
+    locator = _inspect_info(path, fingerprint=fingerprint)
+    return (
+        "invalid" if locator.present else "missing",
+        locator.recorded_pid_alive,
+        locator.diagnostic_code,
+        _recover_runtime_info(path, locator, fingerprint=fingerprint)
+        if recover
+        else None,
+    )
+
+
+def _locator_projection_after_probe(
+    fingerprint: str,
+) -> tuple[_RuntimeLocatorState, bool | None, str | None]:
+    try:
+        state, recorded_pid_alive, diagnostic_code, _ = _inspect_runtime_locator(
+            fingerprint,
+            recover=False,
+        )
+    except EffectRuntimeHostPermissionError as exc:
+        return "invalid", None, exc.diagnostic_code
+    return state, recorded_pid_alive, diagnostic_code
+
+
 def _read_local_snapshot_response(
     envelope: dict[str, Any], sink: Path | None, *, method: str, request_id: str, timeout: float,
 ) -> dict[str, Any]:
@@ -1354,31 +1398,21 @@ def collect_effect_runtime_readiness(*, deep: bool = False) -> dict[str, object]
     if ready:
         try:
             fingerprint = _runtime_fingerprint()
-            info = _read_info(
-                _runtime_info_path(fingerprint),
-                fingerprint=fingerprint,
+            (
+                locator_state,
+                recorded_pid_alive,
+                locator_read_diagnostic,
+                info,
+            ) = _inspect_runtime_locator(fingerprint, recover=True)
+            runtime_diagnostic_code = (
+                locator_read_diagnostic or runtime_diagnostic_code
             )
-            if info is not None:
-                locator_state = "valid"
-                recorded_pid_alive = True
-            else:
-                locator = _inspect_info(
-                    _runtime_info_path(fingerprint),
-                    fingerprint=fingerprint,
-                )
-                locator_state = "invalid" if locator.present else "missing"
-                recorded_pid_alive = locator.recorded_pid_alive
-                runtime_diagnostic_code = locator.diagnostic_code or runtime_diagnostic_code
-                info = _recover_runtime_info(
-                    _runtime_info_path(fingerprint),
-                    locator,
-                    fingerprint=fingerprint,
-                )
             runtime_state = "running" if info is not None else "stopped"
             runtime_identity = runtime_identity_from_info(info)
         except EffectRuntimeHostPermissionError as exc:
             ready = False
             status = "probe_failed"
+            locator_state = "invalid"
             runtime_diagnostic_code = exc.diagnostic_code
             host_permission_error = exc
         except (OSError, EffectRuntimeStartupError) as exc:
@@ -1427,6 +1461,9 @@ def collect_effect_runtime_readiness(*, deep: bool = False) -> dict[str, object]
         )
     if not ready or not deep:
         return result
+    probe_error: RuntimeError | None = None
+    ping: object = None
+    identity: object = None
     try:
         ping = effect_runtime_result("runtime.ping", {})
         identity = effect_runtime_result(
@@ -1439,7 +1476,18 @@ def collect_effect_runtime_readiness(*, deep: bool = False) -> dict[str, object]
             },
         )
     except RuntimeError as exc:
-        diagnostic_code = getattr(exc, "diagnostic_code", "semantic_probe_failed")
+        probe_error = exc
+    (
+        locator_state,
+        recorded_pid_alive,
+        post_probe_diagnostic,
+    ) = _locator_projection_after_probe(fingerprint)
+    if probe_error is not None:
+        diagnostic_code = getattr(
+            probe_error,
+            "diagnostic_code",
+            "semantic_probe_failed",
+        )
         return {
             **result,
             "ready": False,
@@ -1449,10 +1497,12 @@ def collect_effect_runtime_readiness(*, deep: bool = False) -> dict[str, object]
                 **runtime_lifecycle,
                 "state": "unavailable",
                 "diagnostic_code": diagnostic_code,
+                "locator_state": locator_state,
+                "recorded_pid_alive": recorded_pid_alive,
             },
             "recommended_action": (
-                exc.recommended_action
-                if isinstance(exc, EffectRuntimeHostPermissionError)
+                probe_error.recommended_action
+                if isinstance(probe_error, EffectRuntimeHostPermissionError)
                 else node_probe_remediation(diagnostic_code)
                 or "Run `loopx doctor --deep` again after any concurrent startup "
                 "finishes. If the same diagnostic code remains, reinstall LoopX "
@@ -1475,6 +1525,8 @@ def collect_effect_runtime_readiness(*, deep: bool = False) -> dict[str, object]
                 **runtime_lifecycle,
                 "state": "unavailable",
                 "diagnostic_code": "semantic_probe_shape_mismatch",
+                "locator_state": locator_state,
+                "recorded_pid_alive": recorded_pid_alive,
             },
             "recommended_action": (
                 "Reinstall LoopX and verify the packaged TypeScript runtime with "
@@ -1491,7 +1543,9 @@ def collect_effect_runtime_readiness(*, deep: bool = False) -> dict[str, object]
         "runtime_lifecycle": {
             **runtime_lifecycle,
             "state": "running",
-            "diagnostic_code": None,
+            "diagnostic_code": post_probe_diagnostic,
+            "locator_state": locator_state,
+            "recorded_pid_alive": recorded_pid_alive,
         },
         "recommended_action": (
             _sqlite_restart_recommendation(serving_identity)

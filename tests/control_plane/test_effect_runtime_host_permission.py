@@ -253,6 +253,8 @@ def test_readiness_preserves_locator_permission_diagnostic_and_recovery(
     monkeypatch.setattr(Path, "read_text", read)
     result = effect_runtime.collect_effect_runtime_readiness(deep=deep)
     assert result["ready"] is False
+    assert result["runtime_lifecycle"]["locator_state"] == "invalid"
+    assert result["runtime_lifecycle"]["recorded_pid_alive"] is None
     assert result["runtime_lifecycle"]["diagnostic_code"] == "runtime_host_permission_denied"
     assert "host-approved" in result["recommended_action"]
     assert "private locator details" not in json.dumps(result)

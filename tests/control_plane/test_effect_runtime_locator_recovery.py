@@ -1,6 +1,7 @@
 """A damaged locator must not hide or duplicate a live managed runtime."""
 from __future__ import annotations
 
+import errno
 import json
 import subprocess
 import sys
@@ -39,6 +40,16 @@ def _shutdown_info(info: dict[str, object]) -> None:
         time.sleep(0.05)
 
 
+def _shutdown_current_runtime() -> None:
+    fingerprint = effect_runtime._runtime_fingerprint()
+    info = effect_runtime._read_info(
+        effect_runtime._runtime_info_path(fingerprint),
+        fingerprint=fingerprint,
+    )
+    if info is not None:
+        _shutdown_info(info)
+
+
 def test_corrupt_schema_version_reuses_live_runtime_and_reports_its_liveness(
     tmp_path: Path,
     monkeypatch,
@@ -66,6 +77,14 @@ def test_corrupt_schema_version_reuses_live_runtime_and_reports_its_liveness(
         rendered = render_doctor_markdown({"typescript_control_plane": readiness})
         assert "typescript_runtime_locator_state: `invalid`" in rendered
         assert "typescript_runtime_recorded_pid_alive: `True`" in rendered
+
+        deep_readiness = effect_runtime.collect_effect_runtime_readiness(deep=True)
+        deep_lifecycle = deep_readiness["runtime_lifecycle"]
+        assert deep_readiness["semantic_probe"] == "passed"
+        assert deep_lifecycle["state"] == "running"
+        assert deep_lifecycle["locator_state"] == "invalid"
+        assert deep_lifecycle["recorded_pid_alive"] is True
+        assert deep_lifecycle["diagnostic_code"] == "runtime_locator_schema_mismatch"
 
         restarted = effect_runtime.restart_effect_runtime(wait_for_exit=True)
         assert restarted["status"] == "stopped"
@@ -153,3 +172,46 @@ def test_dead_recorded_pid_keeps_a_liveness_diagnostic(
     assert lifecycle["locator_state"] == "invalid"
     assert lifecycle["recorded_pid_alive"] is False
     assert lifecycle["diagnostic_code"] == "runtime_locator_pid_not_alive"
+
+
+def test_deep_readiness_refreshes_locator_after_starting_runtime(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _isolate_runtime(tmp_path, monkeypatch)
+    try:
+        readiness = effect_runtime.collect_effect_runtime_readiness(deep=True)
+
+        lifecycle = readiness["runtime_lifecycle"]
+        assert readiness["ready"] is True
+        assert readiness["semantic_probe"] == "passed"
+        assert lifecycle["state"] == "running"
+        assert lifecycle["locator_state"] == "valid"
+        assert lifecycle["recorded_pid_alive"] is True
+        assert lifecycle["diagnostic_code"] is None
+    finally:
+        _shutdown_current_runtime()
+
+
+def test_generic_locator_read_error_does_not_look_absent(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _isolate_runtime(tmp_path, monkeypatch)
+    info_path = _runtime_info_path()
+    original_read_text = Path.read_text
+
+    def read(path, *args, **kwargs):
+        if path == info_path:
+            raise OSError(errno.EIO, "private read details")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    readiness = effect_runtime.collect_effect_runtime_readiness()
+
+    lifecycle = readiness["runtime_lifecycle"]
+    assert lifecycle["state"] == "stopped"
+    assert lifecycle["locator_state"] == "invalid"
+    assert lifecycle["recorded_pid_alive"] is None
+    assert lifecycle["diagnostic_code"] == "runtime_locator_unreadable"
+    assert "private read details" not in json.dumps(readiness)

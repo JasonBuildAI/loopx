@@ -462,8 +462,10 @@ pub fn desktop_update_status(app: AppHandle, state: State<'_, Maintenance>) -> V
     let runtime_selection = json!({
         "explicit": selection.as_ref().is_some_and(|selected| selected.environment_override),
         "remembered": selection.as_ref().is_some_and(|selected| selected.explicit),
-        // The App-owned bundled runtime and its repair are macOS capabilities;
-        // Windows desktop keeps using the separately installed CLI.
+        // The App-owned bundled runtime repair is declared unavailable on
+        // Windows in this release by product decision, not because the
+        // platform lacks the mechanism; the Windows desktop keeps using the
+        // separately installed CLI.
         "bundled_repair_available": cfg!(target_os = "macos")
             && selection.is_some()
             && bundled_runtime::repair_resources_available(&app)
@@ -488,13 +490,18 @@ fn app_update_platform_supported() -> bool {
 // App-update journey (check/install/restart and its recovery), while the
 // macOS bundled-runtime repair and verified-backup rollback stay macOS-only.
 // Windows rollback and repair report an explicit unavailable state instead
-// of a half-built install path.
-fn app_update_action_supported(action: &str) -> bool {
-    !cfg!(target_os = "windows")
+// of a half-built install path. The rule is a pure platform/action table so
+// every column stays testable from any host OS.
+fn app_update_action_supported_on(platform: &str, action: &str) -> bool {
+    platform != "windows"
         || matches!(
             action,
             "check" | "apply" | "forget_runtime_selection" | "restart"
         )
+}
+
+fn app_update_action_supported(action: &str) -> bool {
+    app_update_action_supported_on(std::env::consts::OS, action)
 }
 
 #[tauri::command]
@@ -765,16 +772,19 @@ async fn install_verified_app(
         .and_then(|result| result);
     if installed.is_err() {
         // A failed install does not by itself prove the previously installed
-        // App is still in place: on macOS the pinned installer renames the old
-        // App away before moving the new one in. Only a verified previous App
-        // (bundle intact, a qualified runtime available) may discard the
-        // journal and promise a safe restart; anything else keeps the journal
-        // and surfaces the distinct recovery state so the verified backup
-        // remains the rollback path. Windows verifies the running executable
-        // instead -- see failed_install_left_previous_app_usable.
+        // App is still in place: the App-owned macOS installer swaps bundles
+        // atomically, but its administrator-owned fallback follows the plugin
+        // installer, which renames the old App away before moving the new one
+        // in. Only a verified previous App (bundle intact, a qualified
+        // runtime available) may discard the journal and promise a safe
+        // restart; anything else keeps the journal and surfaces the distinct
+        // recovery state so the verified backup remains the rollback path.
+        // Windows verifies the running executable instead -- see
+        // failed_install_left_previous_app_usable.
         return Err(finalize_install_failure(
             &state,
             failed_install_left_previous_app_usable(app),
+            platform_uses_install_journal(),
             || bundled_runtime::discard_journal(app),
         )
         .into());
@@ -863,10 +873,11 @@ fn install_failure_recovery(previous_app_usable: bool) -> (&'static str, bool) {
 // recovery state applies instead.
 fn install_failure_state(
     previous_app_usable: bool,
+    journal_applies: bool,
     journal_discarded: Result<bool, String>,
 ) -> &'static str {
     let (code, may_discard_journal) = install_failure_recovery(previous_app_usable);
-    if !may_discard_journal {
+    if !may_discard_journal || !journal_applies {
         return code;
     }
     match journal_discarded {
@@ -875,12 +886,22 @@ fn install_failure_state(
     }
 }
 
+// The continuation journal exists only where a staged App replacement can
+// leave one behind (macOS). The Windows installer never starts unless the
+// pinned plugin's launch succeeded, so a journal filesystem error there
+// cannot describe the installed App and must not reclassify a verified safe
+// restart.
+fn platform_uses_install_journal() -> bool {
+    cfg!(target_os = "macos")
+}
+
 // Own the complete install-failure decision at one testable boundary. The
 // public diagnostic reports whether this call removed a file; safe restart is
 // a separate invariant and also accepts an already-absent journal.
 fn finalize_install_failure(
     state: &Maintenance,
     previous_app_usable: bool,
+    journal_applies: bool,
     discard_journal: impl FnOnce() -> Result<bool, String>,
 ) -> &'static str {
     let (code, may_discard_journal) = install_failure_recovery(previous_app_usable);
@@ -895,7 +916,7 @@ fn finalize_install_failure(
     state
         .install_journal_discarded
         .store(journal_removed, Ordering::Release);
-    let code = install_failure_state(previous_app_usable, journal_result);
+    let code = install_failure_state(previous_app_usable, journal_applies, journal_result);
     state
         .incomplete_app_installation
         .store(code == "app_install_incomplete", Ordering::Release);
@@ -1927,16 +1948,25 @@ mod tests {
 
     #[test]
     fn windows_keeps_the_signed_app_update_journey_without_macos_recovery_actions() {
-        for action in ["check", "apply", "forget_runtime_selection", "restart"] {
-            assert!(app_update_action_supported(action), "{action}");
+        for platform in ["macos", "windows"] {
+            for action in ["check", "apply", "forget_runtime_selection", "restart"] {
+                assert!(
+                    app_update_action_supported_on(platform, action),
+                    "{platform} {action}"
+                );
+            }
         }
         for action in ["repair", "align_runtime", "rollback"] {
-            assert_eq!(
-                app_update_action_supported(action),
-                !cfg!(target_os = "windows"),
-                "{action} availability is platform-scoped"
+            assert!(
+                app_update_action_supported_on("macos", action),
+                "macos keeps {action}"
+            );
+            assert!(
+                !app_update_action_supported_on("windows", action),
+                "windows reports {action} as explicitly unavailable"
             );
         }
+        assert!(app_update_action_supported("check"));
     }
     #[test]
     fn endpoints_are_closed_and_https() {
@@ -2141,7 +2171,9 @@ mod tests {
     #[test]
     fn completed_restore_retires_incomplete_installation_and_exposes_restart() {
         let state = Maintenance::default();
-        finalize_install_failure(&state, false, || panic!("unverified journal retained"));
+        finalize_install_failure(&state, false, platform_uses_install_journal(), || {
+            panic!("unverified journal retained")
+        });
         assert_eq!(
             state.status_snapshot()["details"]["code"],
             "app_install_incomplete"
@@ -2331,7 +2363,29 @@ mod tests {
 
 #[cfg(test)]
 mod install_failure_state_tests {
-    use super::{finalize_install_failure, Maintenance};
+    use super::{
+        finalize_install_failure, install_failure_state, platform_uses_install_journal, Maintenance,
+    };
+
+    #[test]
+    fn a_journal_error_only_reclassifies_where_the_journal_exists() {
+        assert_eq!(
+            install_failure_state(true, true, Err("journal_unavailable".into())),
+            "app_install_incomplete"
+        );
+        assert_eq!(
+            install_failure_state(true, false, Err("journal_unavailable".into())),
+            "app_install_failed"
+        );
+        assert_eq!(
+            install_failure_state(true, true, Ok(true)),
+            "app_install_failed"
+        );
+        assert_eq!(
+            install_failure_state(false, true, Ok(true)),
+            "app_install_incomplete"
+        );
+    }
 
     #[test]
     fn existing_journal_is_removed_before_safe_restart_is_reported() {
@@ -2340,7 +2394,7 @@ mod install_failure_state_tests {
         let journal = dir.path().join("desktop-update.json");
         std::fs::write(&journal, "{\"version\":\"1.2.3\"}").unwrap();
 
-        let code = finalize_install_failure(&state, true, || {
+        let code = finalize_install_failure(&state, true, true, || {
             crate::bundled_runtime::discard_journal_at(&journal)
         });
 
@@ -2356,7 +2410,7 @@ mod install_failure_state_tests {
         let dir = tempfile::tempdir().unwrap();
         let journal = dir.path().join("desktop-update.json");
 
-        let code = finalize_install_failure(&state, true, || {
+        let code = finalize_install_failure(&state, true, true, || {
             crate::bundled_runtime::discard_journal_at(&journal)
         });
 
@@ -2373,7 +2427,7 @@ mod install_failure_state_tests {
         let journal = dir.path().join("desktop-update.json");
         std::fs::create_dir(&journal).unwrap();
 
-        let code = finalize_install_failure(&state, true, || {
+        let code = finalize_install_failure(&state, true, true, || {
             crate::bundled_runtime::discard_journal_at(&journal)
         });
 
@@ -2399,7 +2453,7 @@ mod install_failure_state_tests {
     #[test]
     fn unusable_app_keeps_recovery_state_without_touching_the_journal() {
         let state = Maintenance::default();
-        let code = finalize_install_failure(&state, false, || {
+        let code = finalize_install_failure(&state, false, platform_uses_install_journal(), || {
             panic!("an unusable App must not discard recovery state")
         });
         assert_eq!(code, "app_install_incomplete");

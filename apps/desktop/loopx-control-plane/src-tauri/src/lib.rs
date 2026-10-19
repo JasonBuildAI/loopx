@@ -396,10 +396,13 @@ mod tests {
         assert!(!allowed);
         assert_eq!(opened, [external.as_str()]);
         // The transport alias is accepted only as an exact origin: a lookalike
-        // host stays an external web destination and is handed off once more.
+        // host, port, or scheme stays an external web destination and is
+        // handed off once more.
         for destination in [
             "http://tauri.localhost.evil.example/index.html",
             "http://elsewhere.localhost/index.html",
+            "http://tauri.localhost:8080/index.html",
+            "https://tauri.localhost/index.html",
         ] {
             let destination: Url = destination.parse().unwrap();
             let mut opened = Vec::new();
@@ -478,6 +481,12 @@ mod tests {
         // snapshot itself and name the known fresh-Mac installer failure.
         assert!(script.contains("runtime_install_exit_2"));
         assert!(script.contains("desktop_recovery_diagnostics_v2"));
+        // The Windows release ships no bundled-runtime repair and no rollback,
+        // so fallback copy for states without a dedicated code must switch to
+        // wording that avoids those controls when repair is unavailable.
+        assert!(
+            script.contains("!bundledRepairAvailable && Object.hasOwn(unrepairedFallback, phase)")
+        );
     }
 
     #[test]

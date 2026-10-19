@@ -269,6 +269,9 @@ class FeedTests(unittest.TestCase):
                 self.signature.write_text(content)
                 with self.assertRaises(ValueError):
                     self.build()
+                # Keep the qualified Darwin signature valid so the second
+                # failure is caused by the Windows signature alone.
+                self.signature.write_text(TEST_SIGNATURE)
                 self.windows_signature.write_text(content)
                 with self.assertRaises(ValueError):
                     self.build()

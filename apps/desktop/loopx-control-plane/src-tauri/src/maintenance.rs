@@ -362,6 +362,28 @@ impl Maintenance {
         }
         Some(recover())
     }
+
+    // The App-update handoff reclaimed this window's services before the
+    // pinned Windows installer could be launched, but the launch failed and
+    // this process survived. The failure snapshot the operator is retrying
+    // from is the state this restore has to preserve, so the transaction
+    // fences that guard ordinary reconciliation do not apply; an admitted
+    // explicit action still owns the next attempt and defers this one.
+    fn restore_services<T>(
+        &self,
+        start: impl FnOnce() -> Result<T, String>,
+    ) -> Result<Option<T>, String> {
+        if self.busy.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        let Ok(_guard) = self.supervision.try_lock() else {
+            return Ok(None);
+        };
+        if self.busy.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        Ok(Some(start()?))
+    }
 }
 struct BusyGuard<'a>(&'a AtomicBool);
 impl Drop for BusyGuard<'_> {
@@ -732,6 +754,12 @@ async fn find_update(
 ) -> Result<Option<Update>, String> {
     let channel = channel.to_owned();
     app.updater_builder()
+        // The pinned Windows installer launches the replacement right after
+        // the pre-exit hook and exits the process when that launch succeeds,
+        // so this is the only chance to reclaim this App's own services; its
+        // owner documents why Tauri's `cleanup_before_exit` deliberately
+        // stays out of the hook.
+        .on_before_exit(crate::service_lifecycle::app_update_pre_exit_hook(app))
         .version_comparator(move |current, remote| {
             crate::prepared_update::is_newer(
                 &current.to_string(),
@@ -781,6 +809,12 @@ async fn install_verified_app(
         // recovery state so the verified backup remains the rollback path.
         // Windows verifies the running executable instead -- see
         // failed_install_left_previous_app_usable.
+        // The pinned plugin's Windows hook already reclaimed this window's own
+        // services before it tried to launch the installer; an error here
+        // means the launch failed and this process continues, so the handoff
+        // is released. A reclaimed runtime is then owed back to the live
+        // window by the supervisor, and the failure below stays on screen.
+        crate::service_lifecycle::release_app_update_handoff(app);
         return Err(finalize_install_failure(
             &state,
             failed_install_left_previous_app_usable(app),
@@ -1276,6 +1310,24 @@ pub fn start_services(
         }
     }
     result
+}
+
+// Restore the runtime a released App-update handoff owes back. The pinned
+// Windows installer returns an error only when its launch never happened, so
+// the same runtime is started again in place: no phase is re-announced, and
+// the failure snapshot keeps its place on screen.
+pub fn restore_services_after_update_failure(
+    app: &AppHandle,
+    endpoints: &crate::service_endpoints::ServiceEndpoints,
+) -> Result<Option<crate::services::ServiceSet>, String> {
+    let state = app.state::<Maintenance>();
+    state.restore_services(|| {
+        // Progress would replace the failure snapshot with "connecting"; this
+        // start exists only to hand the live window its runtime back.
+        let runtime = resume_runtime(app)?;
+        crate::services::ServiceSet::start(&runtime, endpoints, |_pending| {})
+            .map_err(|error| error.to_string())
+    })
 }
 
 pub fn reconnect_requested(app: &AppHandle) -> bool {
@@ -2269,6 +2321,47 @@ mod tests {
             install_failure_recovery(false),
             ("app_install_incomplete", false)
         );
+    }
+
+    #[test]
+    fn a_released_handoff_restores_the_runtime_without_overwriting_the_failure() {
+        // The pinned Windows installer only exits this process after a
+        // successful launch, so an install error returns in-process with the
+        // handoff already released. The reclaimed runtime comes back while the
+        // failure the operator is acting on stays the visible state.
+        let state = Maintenance::default();
+        state.publish_failure("app_install_failed", "main");
+        let started = std::cell::Cell::new(false);
+        let restored = state.restore_services(|| {
+            started.set(true);
+            Ok("owned services")
+        });
+        assert_eq!(restored.unwrap(), Some("owned services"));
+        assert!(started.get());
+        assert_eq!(
+            state.status_snapshot()["phase"],
+            "error",
+            "the restore must not replace the failure snapshot"
+        );
+        assert_eq!(
+            state.status_snapshot()["details"]["code"],
+            "app_install_failed"
+        );
+    }
+
+    #[test]
+    fn a_restore_yields_to_an_admitted_explicit_action() {
+        let state = Maintenance::default();
+        let guard = state.acquire().unwrap();
+        let started = std::cell::Cell::new(false);
+        let deferred = state.restore_services(|| {
+            started.set(true);
+            Ok(())
+        });
+        assert_eq!(deferred.unwrap(), None);
+        assert!(!started.get(), "a running transaction owns the runtime");
+        drop(guard);
+        assert_eq!(state.restore_services(|| Ok(())).unwrap(), Some(()));
     }
 
     #[test]

@@ -6,17 +6,15 @@ mod prepared_update;
 mod runtime_ancestry;
 mod runtime_selection;
 mod service_endpoints;
+mod service_lifecycle;
 mod services;
 mod update_backup;
 mod upgrade_request;
 mod workspace_handoff;
 mod workspace_location;
 
-use services::ServiceSet;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
-};
+use service_lifecycle::ServiceLifecycle;
+use std::sync::{Arc, Mutex};
 use tauri::{
     ipc::CapabilityBuilder, webview::PageLoadEvent, AppHandle, Manager, RunEvent, Url, WebviewUrl,
     WebviewWindowBuilder, WindowEvent,
@@ -128,14 +126,13 @@ pub fn run() {
     let web_origin = "http://127.0.0.1:5173".to_string();
     #[cfg(not(dev))]
     let web_origin = endpoints.workspace_origin();
-    let services = Arc::new(Mutex::new(None::<ServiceSet>));
-    let services_for_setup = Arc::clone(&services);
     let navigation_origin: Url = web_origin.parse().expect("valid desktop origin");
-    let shutting_down = Arc::new(AtomicBool::new(false));
-    let shutting_down_for_setup = Arc::clone(&shutting_down);
+    let lifecycle = ServiceLifecycle::new();
+    let lifecycle_for_setup = lifecycle.clone();
 
     let builder = tauri::Builder::default()
         .manage(maintenance::Maintenance::default())
+        .manage(lifecycle.clone())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             maintenance::desktop_update,
@@ -206,12 +203,20 @@ pub fn run() {
 
             let handle = app.handle().clone();
             std::thread::spawn(move || {
+                let lifecycle = lifecycle_for_setup;
                 // Runtime preparation belongs to the same live supervisor as
                 // service startup. A failed install must not strand this window
                 // after a later repair, reload, or external runtime correction.
-                while !shutting_down_for_setup.load(Ordering::Acquire) {
+                while !lifecycle.should_stop() {
+                    // The App-update handoff owns the runtime until it either
+                    // replaces this process or returns; while it is active the
+                    // supervisor neither starts nor recovers services.
+                    if lifecycle.handoff_active() {
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        continue;
+                    }
                     {
-                        let mut current = services_for_setup.lock().expect("service state lock");
+                        let mut current = lifecycle.services();
                         if current.is_some() {
                             if maintenance::reconnect_requested(&handle) {
                                 // Runtime repair reuses this supervisor even
@@ -232,18 +237,39 @@ pub fn run() {
                             }
                         }
                     }
-                    match maintenance::start_services(&handle, &endpoints) {
+                    let restoring = lifecycle.restore_pending();
+                    let started = if restoring {
+                        // A released handoff (the installer never launched)
+                        // already stopped this window's own services. Bring the
+                        // same runtime back without re-announcing phases: the
+                        // failure snapshot on screen is the state the operator
+                        // is retrying from, and it must not be overwritten.
+                        maintenance::restore_services_after_update_failure(&handle, &endpoints)
+                    } else {
+                        maintenance::start_services(&handle, &endpoints)
+                    };
+                    match started {
                         Ok(None) => {
                             std::thread::sleep(std::time::Duration::from_millis(200));
                             continue;
                         }
-                        Ok(Some(mut started)) => {
-                            if shutting_down_for_setup.load(Ordering::Acquire) {
-                                started.stop();
-                                return;
-                            }
+                        Ok(Some(started)) => {
                             let healed = started.healed;
-                            *services_for_setup.lock().expect("service state lock") = Some(started);
+                            if let Err(mut returned) = lifecycle.adopt(started) {
+                                // The window closed or a new handoff claimed
+                                // the runtime while this start was in flight:
+                                // stop the group this thread started instead
+                                // of stranding it, and keep owing whatever the
+                                // owner recorded.
+                                returned.stop();
+                                continue;
+                            }
+                            if restoring {
+                                // The failure snapshot owns this transition;
+                                // the workspace handoff already settled and
+                                // must not replay an old selection.
+                                continue;
+                            }
                             handoff
                                 .lock()
                                 .expect("workspace handoff lock")
@@ -260,6 +286,22 @@ pub fn run() {
                             }
                         }
                         Err(error) => {
+                            if restoring {
+                                // The failure diagnostics stay on screen;
+                                // retry the reclaimed runtime at the
+                                // supervisor's pace without re-announcing a
+                                // phase.
+                                eprintln!(
+                                    "LoopX service restore after failed App update deferred: {error}"
+                                );
+                                for _ in 0..10 {
+                                    if lifecycle.should_stop() || lifecycle.handoff_active() {
+                                        break;
+                                    }
+                                    std::thread::sleep(std::time::Duration::from_millis(200));
+                                }
+                                continue;
+                            }
                             let message = boot_failure_message(&error);
                             eprintln!("LoopX service error: {error}");
                             if let Some(window) = handle.get_webview_window("main") {
@@ -283,7 +325,7 @@ pub fn run() {
                                 10
                             };
                             for _ in 0..rounds {
-                                if shutting_down_for_setup.load(Ordering::Acquire) {
+                                if lifecycle.should_stop() {
                                     return;
                                 }
                                 if maintenance::reconnect_requested(&handle) {
@@ -309,14 +351,9 @@ pub fn run() {
         .expect("failed to build LoopX desktop shell");
     app.run(move |app, event| {
         if matches!(event, RunEvent::Exit | RunEvent::ExitRequested { .. }) {
-            workspace_location::remember_current(app);
-            shutting_down.store(true, Ordering::Release);
-            if let Ok(mut guard) = services.lock() {
-                if let Some(current) = guard.as_mut() {
-                    current.stop();
-                }
-                *guard = None;
-            }
+            // Save the route and reclaim this App's own services through the
+            // same owner the App-update handoff uses.
+            lifecycle.shutdown(app);
         }
     });
 }

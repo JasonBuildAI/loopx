@@ -334,3 +334,11 @@ mod tests {
         }
     }
 }
+
+// The verified-artifact launch failure is a full-journey regression: it drives
+// the pinned updater's own HTTP, signature verification and Windows launch
+// against a real window plus the ownership rules above. It lives in its own
+// file to keep those rules readable.
+#[cfg(all(test, windows))]
+#[path = "service_lifecycle_windows_update_tests.rs"]
+mod windows_update_tests;

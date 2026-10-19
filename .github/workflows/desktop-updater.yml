@@ -38,6 +38,22 @@ jobs:
       - run: python3 -m unittest discover -s tests/desktop -p 'test_*.py'
       - run: cargo test --locked && cargo clippy --all-targets --locked -- -D warnings
         working-directory: apps/desktop/loopx-control-plane/src-tauri
+  windows-desktop-tests:
+    # The lifecycle and update regressions behind the signed Windows updater
+    # are Windows-native (service job objects, `ShellExecuteW`, real child
+    # processes) and cannot execute on the macOS `validate` leg. Compile the
+    # whole test target natively and run those regressions here.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/loopx-control-plane/src-tauri -> target
+          key: desktop-update-windows-tests
+      - run: cargo test --locked --lib -- service_lifecycle
+        working-directory: apps/desktop/loopx-control-plane/src-tauri
   identity:
     if: github.repository == 'loopx-project/loopx' && ((github.event_name == 'release' && !github.event.release.prerelease && startsWith(github.event.release.tag_name, 'v')) || (github.event_name != 'release' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest

@@ -16,10 +16,14 @@ WORKFLOW = (
     / "workflows"
     / "desktop-updater.yml"
 )
-# What Tauri signs with: base64 of a minisign signature whose first line is
-# an untrusted comment. Matches the shape of published channel signatures.
+# What Tauri signs with: base64 of a minisign signature whose lines are the
+# untrusted comment, a 74-byte signature, a trusted comment and a 64-byte
+# global signature. Matches the shape of published channel signatures.
 TEST_SIGNATURE = base64.b64encode(
-    b"untrusted comment: signature from tauri secret key\nRWQexample\n"
+    b"untrusted comment: signature from tauri secret key\n"
+    + base64.b64encode(b"\x00" * 74)
+    + b"\ntrusted comment: timestamp:0\n"
+    + base64.b64encode(b"\x00" * 64)
 ).decode("ascii")
 
 
@@ -127,6 +131,7 @@ class FeedTests(unittest.TestCase):
             "- name: Collect native updater artifacts", 1
         )[1].split("- uses: actions/upload-artifact", 1)[0]
         self.assertIn("-updater-setup.exe", collect_step)
+        self.assertIn("*-updater-setup.exe*) continue", collect_step)
         self.assertIn('ls dist/updater/*"$VERSION"*-updater-setup.exe', collect_step)
         self.assertIn("VERSION: ${{ needs.identity.outputs.version }}", collect_step)
 
@@ -233,10 +238,32 @@ class FeedTests(unittest.TestCase):
             self.build()
 
     def test_malformed_signature_fails_closed(self):
+        # The client needs two decodable payloads of 74 and 64 bytes; a
+        # partially written file that only carries the comment line, a wrong
+        # payload length, or bytes a lenient decoder would silently drop must
+        # not be published.
+        short_signature = base64.b64encode(b"\x00" * 73)
+        global_signature = base64.b64encode(b"\x00" * 64)
         for case, content in [
             ("not base64", "signature from tauri secret key"),
             ("wrong decoded contents", base64.b64encode(b"hello world").decode("ascii")),
             ("broken padding", TEST_SIGNATURE[:-1]),
+            (
+                "comment only",
+                base64.b64encode(
+                    b"untrusted comment: signature from tauri secret key\n"
+                ).decode("ascii"),
+            ),
+            (
+                "wrong payload length",
+                base64.b64encode(
+                    b"untrusted comment: c\n"
+                    + short_signature
+                    + b"\ntrusted comment: t\n"
+                    + global_signature
+                ).decode("ascii"),
+            ),
+            ("embedded newline", TEST_SIGNATURE[:40] + "\n" + TEST_SIGNATURE[40:]),
         ]:
             with self.subTest(case=case):
                 self.signature.write_text(content)

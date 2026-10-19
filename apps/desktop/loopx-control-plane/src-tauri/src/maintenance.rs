@@ -911,7 +911,13 @@ fn finalize_install_failure(
             .store(true, Ordering::Release);
         return code;
     }
-    let journal_result = discard_journal();
+    // A platform without the staged-replacement journal must not attempt the
+    // effect at all; the classification below already ignores it.
+    let journal_result = if journal_applies {
+        discard_journal()
+    } else {
+        Ok(false)
+    };
     let journal_removed = journal_result.as_ref().is_ok_and(|removed| *removed);
     state
         .install_journal_discarded
@@ -2385,6 +2391,18 @@ mod install_failure_state_tests {
             install_failure_state(false, true, Ok(true)),
             "app_install_incomplete"
         );
+    }
+
+    #[test]
+    fn a_journal_that_does_not_apply_is_neither_touched_nor_reclassified() {
+        let state = Maintenance::default();
+        let code = finalize_install_failure(&state, true, false, || {
+            panic!("a platform without the staged-replacement journal must not touch it")
+        });
+        assert_eq!(code, "app_install_failed");
+        assert!(!state
+            .incomplete_app_installation
+            .load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]

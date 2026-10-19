@@ -38,9 +38,11 @@ def release_channel(tag: str, prerelease: bool) -> str:
 def _minisign_signature(path: Path) -> str:
     """Publish only a signature the pinned updater can parse.
 
-    The client base64-decodes the .sig file and reads a minisign signature
-    whose first line is an untrusted comment. A truncated or mismatched file
-    must fail here, not after the client has downloaded the artifact.
+    The client base64-decodes the .sig file and hands the bytes to minisign,
+    which reads four lines: the untrusted comment, the 74-byte signature, the
+    trusted comment and the 64-byte global signature. A truncated or
+    mismatched file must fail here, not after the client has downloaded the
+    artifact.
     """
     encoded = path.read_text(encoding="utf-8").strip()
     if not encoded:
@@ -49,7 +51,19 @@ def _minisign_signature(path: Path) -> str:
         decoded = base64.b64decode(encoded, validate=True)
     except (binascii.Error, ValueError) as error:
         raise ValueError(f"invalid signature encoding: {path.name}") from error
-    if not decoded.startswith(b"untrusted comment: "):
+    lines = decoded.split(b"\n")
+    if lines and lines[-1] == b"":
+        lines.pop()
+    if len(lines) != 4 or not lines[0].startswith(b"untrusted comment: "):
+        raise ValueError(f"invalid signature contents: {path.name}")
+    if not lines[2].startswith(b"trusted comment: "):
+        raise ValueError(f"invalid signature contents: {path.name}")
+    try:
+        signature = base64.b64decode(lines[1], validate=True)
+        global_signature = base64.b64decode(lines[3], validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError(f"invalid signature contents: {path.name}") from error
+    if len(signature) != 74 or len(global_signature) != 64:
         raise ValueError(f"invalid signature contents: {path.name}")
     return encoded
 

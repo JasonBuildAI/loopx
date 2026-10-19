@@ -316,7 +316,7 @@ try {
   nativeState = { phase: "idle", details: {} };
   await page.reload();
   await page.getByRole("button", { name: "更新 LoopX", exact: true }).click();
-  await page.getByText(/App 启动时会检查并安装当前通道/).waitFor();
+  await page.getByText(/已准备的更新在下次打开时安装，Windows 版在启动时检查并安装/).waitFor();
   await page.getByText("高级选项", { exact: true }).click();
   assert.equal(await page.getByRole("button", { name: "修复当前版本", exact: true }).isEnabled(), true, "legacy native status retains its available repair action");
 

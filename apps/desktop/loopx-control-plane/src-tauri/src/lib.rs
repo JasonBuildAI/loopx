@@ -97,10 +97,19 @@ fn open_web_destination(
 
 fn workspace_navigation(
     url: &Url,
-    origin: &Url,
+    workspace_origin: &Url,
+    boot_origin: &Url,
     launch: impl FnOnce(&str) -> std::io::Result<()>,
 ) -> bool {
-    if url.scheme() == "tauri" || url.origin() == origin.origin() {
+    // macOS serves the App's bundled boot surface over `tauri://localhost`, and
+    // the scheme check below covers it. Windows serves the same bundled page
+    // over the WebView2 transport alias `http://tauri.localhost`, so that boot
+    // origin stays inside the fence too. Opaque origins never compare equal,
+    // which keeps `file://` and other custom protocols outside the fence.
+    if url.scheme() == "tauri"
+        || url.origin() == workspace_origin.origin()
+        || url.origin() == boot_origin.origin()
+    {
         return true;
     }
     // WKWebView evaluates navigation policy before its new-window delegate.
@@ -162,8 +171,9 @@ pub fn run() {
             } else {
                 NavigationRetry::SingleAttempt
             };
+            let boot_origin = boot_url(app.handle());
             let handoff = Arc::new(Mutex::new(WorkspaceHandoff::new(
-                boot_url(app.handle()),
+                boot_origin.clone(),
                 workspace_location::launch_destination(app.handle(), &origin),
                 retry,
             )));
@@ -185,7 +195,7 @@ pub fn run() {
                         .page_reached(payload.url());
                 })
                 .on_navigation(move |url| {
-                    workspace_navigation(url, &navigation_origin, |destination| {
+                    workspace_navigation(url, &navigation_origin, &boot_origin, |destination| {
                         open::that_detached(destination)
                     })
                 })
@@ -355,26 +365,55 @@ mod tests {
 
     #[test]
     fn navigation_keeps_the_workspace_fence_and_hands_external_web_links_off_once() {
-        let origin: Url = "http://127.0.0.1:8767/chat/".parse().unwrap();
-        for destination in [
-            "tauri://localhost/",
-            "http://127.0.0.1:8767/chat/?goalId=example",
+        let workspace: Url = "http://127.0.0.1:8767/chat/".parse().unwrap();
+        // macOS reaches the bundled boot surface over the custom protocol;
+        // Windows serves the same page over the WebView2 transport alias.
+        for (boot, boot_page) in [
+            ("tauri://localhost/", "tauri://localhost/index.html"),
+            (
+                "http://tauri.localhost/",
+                "http://tauri.localhost/index.html",
+            ),
         ] {
-            assert!(workspace_navigation(
-                &destination.parse().unwrap(),
-                &origin,
-                |_| { panic!("workspace navigation must not leave the App") }
-            ));
+            let boot: Url = boot.parse().unwrap();
+            for destination in [boot_page, "http://127.0.0.1:8767/chat/?goalId=example"] {
+                assert!(workspace_navigation(
+                    &destination.parse().unwrap(),
+                    &workspace,
+                    &boot,
+                    |_| { panic!("workspace navigation must not leave the App") }
+                ));
+            }
         }
+        let boot: Url = "http://tauri.localhost/".parse().unwrap();
         let external: Url = "https://example.org/form?lang=en&view=all".parse().unwrap();
         let mut opened = Vec::new();
-        let allowed = workspace_navigation(&external, &origin, |value| {
+        let allowed = workspace_navigation(&external, &workspace, &boot, |value| {
             opened.push(value.to_string());
             Ok(())
         });
         // macOS never reaches the new-window delegate after this rejection.
         assert!(!allowed);
         assert_eq!(opened, [external.as_str()]);
+        // The transport alias is accepted only as an exact origin: a lookalike
+        // host stays an external web destination and is handed off once more.
+        for destination in [
+            "http://tauri.localhost.evil.example/index.html",
+            "http://elsewhere.localhost/index.html",
+        ] {
+            let destination: Url = destination.parse().unwrap();
+            let mut opened = Vec::new();
+            assert!(!workspace_navigation(
+                &destination,
+                &workspace,
+                &boot,
+                |value| {
+                    opened.push(value.to_string());
+                    Ok(())
+                }
+            ));
+            assert_eq!(opened, [destination.as_str()]);
+        }
         for destination in [
             "file:///tmp/example.txt",
             "javascript:alert(1)",
@@ -382,11 +421,12 @@ mod tests {
         ] {
             assert!(!workspace_navigation(
                 &destination.parse().unwrap(),
-                &origin,
+                &workspace,
+                &boot,
                 |_| { panic!("non-web navigation must not reach a system handler") }
             ));
         }
-        assert!(!workspace_navigation(&external, &origin, |_| {
+        assert!(!workspace_navigation(&external, &workspace, &boot, |_| {
             Err(std::io::Error::other("browser unavailable"))
         }));
     }

@@ -84,7 +84,8 @@ native desktop previews from the [1.0 release](https://github.com/loopx-project/
 they reuse the same loopback services and Goal state. Apple Silicon macOS supports
 signed App updates that pair the shell with its bundled runtime, plus repair and
 recovery. Python 3.11+ is required; the App is ad-hoc signed, not notarized.
-Windows preview installers currently use manual updates and a separately installed CLI.
+Windows NSIS preview installers support the same signed update flow on the main
+channel, with a separately installed CLI; the stable channel and MSI installs stay manual.
 [Desktop installation, updates, and source development](apps/desktop/loopx-control-plane/README.md).
 
 <details>

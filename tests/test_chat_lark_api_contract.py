@@ -988,6 +988,12 @@ def test_manager_connection_opens_audience_session_only_on_execute(
 def test_manager_scope_reads_policy_from_coordination_root_when_chat_root_overrides(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
+    from loopx.capabilities.machine_configuration.builtins import (
+        build_builtin_machine_configuration_registry,
+    )
+    from loopx.capabilities.machine_configuration.store import (
+        configure_machine_configuration,
+    )
     from loopx.capabilities.manager_context import configure_evidence_scope
     from loopx.chat_manager import (
         manager_channel,
@@ -1013,6 +1019,31 @@ def test_manager_scope_reads_policy_from_coordination_root_when_chat_root_overri
     channel = manager_channel(
         provider="lark", audience="mew\0oc_public_fixture"
     )
+    machine_configuration = {
+        "schema_version": "loopx_machine_configuration_v0",
+        "namespaces": {
+            "steward_executor": {
+                "schema_version": "steward_executor_machine_defaults_v0",
+                "executor_endpoint": "dsh",
+                "executor_model": None,
+                "executor_reasoning_effort": None,
+            }
+        },
+    }
+    machine_registry = build_builtin_machine_configuration_registry()
+    preview = configure_machine_configuration(
+        runtime_root=chat_root,
+        configuration=machine_configuration,
+        registry=machine_registry,
+        execute=False,
+    )
+    configure_machine_configuration(
+        runtime_root=chat_root,
+        configuration=machine_configuration,
+        registry=machine_registry,
+        execute=True,
+        expected_plan_revision=str(preview["plan_revision"]),
+    )
     configure_evidence_scope(
         coordination_root,
         registry_path,
@@ -1023,6 +1054,7 @@ def test_manager_scope_reads_policy_from_coordination_root_when_chat_root_overri
     )
 
     executor_endpoint, _source = manager_connection_executor_endpoint(chat_root)
+    assert executor_endpoint == "dsh"
     target_payload = {
         "schema_version": "loopx_goal_channel_provider_targets_v0",
         "targets": {

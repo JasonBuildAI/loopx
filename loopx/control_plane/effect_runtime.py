@@ -67,6 +67,7 @@ STARTUP_POLL_SECONDS = 0.025
 RUNTIME_LOCATOR_PERMISSION_RETRIES = 3
 RUNTIME_RETRY_SETTLE_SECONDS = 0.25
 RUNTIME_LOCATOR_RECOVERY_TIMEOUT_SECONDS = 1.0
+_RUNTIME_PID_MAX = 0xFFFFFFFF
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 10.0
 # Canonical writers may wait 30 seconds for the per-Goal maintenance lock and
 # another 5 seconds for the provider lock. Keep the client connected through
@@ -432,6 +433,20 @@ def _pid_is_alive(value: object) -> bool:
     return process_is_alive(value)
 
 
+def _recorded_pid_alive(value: object) -> bool | None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value <= 0
+        or value > _RUNTIME_PID_MAX
+    ):
+        return None
+    try:
+        return _pid_is_alive(value)
+    except OverflowError:
+        return None
+
+
 def _reap_exited_runtime_child(info: Mapping[str, Any] | None) -> None:
     """Let a dead directly spawned child fail the next non-signaling probe.
 
@@ -528,11 +543,7 @@ def _inspect_info(path: Path, *, fingerprint: str | None) -> _RuntimeLocatorRead
             diagnostic_code="runtime_locator_unreadable",
         )
     pid = payload.get("pid")
-    recorded_pid_alive = (
-        _pid_is_alive(pid)
-        if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
-        else None
-    )
+    recorded_pid_alive = _recorded_pid_alive(pid)
     if payload.get("schema_version") != EFFECT_RUNTIME_INFO_SCHEMA_VERSION:
         return _RuntimeLocatorRead(
             info=None,

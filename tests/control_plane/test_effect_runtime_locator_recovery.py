@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import subprocess
@@ -139,6 +140,85 @@ def test_invalid_utf8_locator_does_not_break_doctor(
     rendered = render_doctor_markdown({"typescript_control_plane": readiness})
     assert "typescript_runtime_locator_state: `invalid`" in rendered
     assert "typescript_runtime_diagnostic: `runtime_locator_unreadable`" in rendered
+
+
+def test_oversized_locator_pid_does_not_escape_readiness(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _isolate_runtime(tmp_path, monkeypatch)
+    fingerprint = effect_runtime._runtime_fingerprint()
+    info_path = effect_runtime._runtime_info_path(fingerprint)
+    info_path.parent.mkdir(parents=True)
+    info_path.write_text(
+        json.dumps({
+            "schema_version": "loopx_effect_runtime_info_v1",
+            "fingerprint": fingerprint,
+            "host": "127.0.0.1",
+            "port": 1,
+            "token": "fixture-token",
+            "pid": 10**30,
+        }),
+        encoding="utf-8",
+    )
+
+    readiness = effect_runtime.collect_effect_runtime_readiness()
+
+    lifecycle = readiness["runtime_lifecycle"]
+    assert lifecycle["locator_state"] == "invalid"
+    assert lifecycle["recorded_pid_alive"] is None
+    assert lifecycle["diagnostic_code"] == "runtime_locator_schema_mismatch"
+    rendered = render_doctor_markdown({"typescript_control_plane": readiness})
+    assert "typescript_runtime_recorded_pid_alive: `None`" in rendered
+
+
+def test_installation_doctor_keeps_json_for_oversized_locator_pid(
+    tmp_path: Path,
+) -> None:
+    fingerprint = effect_runtime._runtime_fingerprint()
+    owner = str(os.getuid()) if hasattr(os, "getuid") else str(Path.home())
+    runtime_dir = tmp_path / (
+        "loopx-effect-runtime-"
+        + hashlib.sha256(owner.encode("utf-8")).hexdigest()[:12]
+    )
+    runtime_dir.mkdir()
+    info_path = runtime_dir / f"runtime-{fingerprint[:16]}.json"
+    info_path.write_text(
+        json.dumps({
+            "schema_version": "loopx_effect_runtime_info_v1",
+            "fingerprint": fingerprint,
+            "host": "127.0.0.1",
+            "port": 1,
+            "token": "fixture-token",
+            "pid": 10**30,
+        }),
+        encoding="utf-8",
+    )
+    environment = {
+        **os.environ,
+        "TMPDIR": str(tmp_path),
+        "TEMP": str(tmp_path),
+        "TMP": str(tmp_path),
+    }
+
+    loopx_cli = Path(sys.executable).with_name(
+        "loopx.exe" if os.name == "nt" else "loopx"
+    )
+    completed = subprocess.run(
+        [str(loopx_cli), "doctor", "--installation-only", "--format", "json"],
+        cwd=Path(__file__).resolve().parents[2],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert completed.returncode in (0, 1), completed.stderr
+    payload = json.loads(completed.stdout)
+    lifecycle = payload["typescript_control_plane"]["runtime_lifecycle"]
+    assert lifecycle["locator_state"] == "invalid"
+    assert lifecycle["recorded_pid_alive"] is None
+    assert "Traceback" not in completed.stderr
 
 
 def test_dead_recorded_pid_keeps_a_liveness_diagnostic(

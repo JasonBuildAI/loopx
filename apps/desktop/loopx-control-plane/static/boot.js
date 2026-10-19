@@ -121,6 +121,22 @@ const errors = {
   backup_failed: "App 备份无法保存或未通过完整性校验，替换已停止。请检查磁盘空间与权限，或重新安装完整 App。",
   rollback_failed: "恢复 App 未完成，请保持窗口打开。可重试恢复；若仍失败，请重新安装完整 App。",
 };
+// Fallback wording for states without a dedicated code must name the controls
+// this panel actually offers: where the bundled-runtime repair is unavailable
+// (the Windows release), it must not point at the disabled repair action or
+// the hidden rollback action.
+const unrepairedFallback = {
+  service_error: "运行时已安装，但服务尚未连接。可检查更新；连接仍会自动重试。",
+  runtime_required: "无法准备可用组件。可检查 App 更新；当前安装仍会保留。",
+  available: "有新版本可用，可更新 App。",
+  error: "更新未完成。请重试检查更新。Goal 数据不会被删除。",
+};
+function fallbackText(phase) {
+  if (!bundledRepairAvailable && Object.hasOwn(unrepairedFallback, phase)) {
+    return unrepairedFallback[phase];
+  }
+  return labels[phase] || "";
+}
 function codeText(code, phase) {
   if (runtimeExplicit && ["runtime_identity_unavailable", "runtime_selection_explicit"].includes(code)) {
     return "启动参数 LOOPX_BIN 固定了当前运行时。请通过该安装方式修复它，或移除、修正 LOOPX_BIN 后重新打开 App；清除记住的选择不会改变此参数。";
@@ -134,7 +150,7 @@ function codeText(code, phase) {
     }
     return `安装程序退出（${code.slice("runtime_install_exit_".length)}）。请复制诊断信息反馈；修复没有完成。`;
   }
-  return Object.hasOwn(errors, code) ? errors[code] : labels[phase] || "";
+  return Object.hasOwn(errors, code) ? errors[code] : fallbackText(phase);
 }
 function render(state) {
   if (!state?.phase) return state;

@@ -138,14 +138,18 @@ export function DesktopUpdate() {
       }
     }
   }
+  // Where this App cannot reinstall its bundled runtime (the Windows release,
+  // or a separately managed runtime), the copy must not name the disabled
+  // repair action or promise a combined App-and-runtime update.
+  const phaseMessage = (repaired: string, unrepaired: string) => (repairAvailable ? repaired : unrepaired);
   const message: Record<Phase, string> = {
-    service_error: zh ? "运行时已安装，但服务尚未连接。可重试更新、修复或恢复上版。" : "Runtime installed, but services are unavailable. Retry updates, repair, or restore the previous version.",
+    service_error: phaseMessage(zh ? "运行时已安装，但服务尚未连接。可重试更新、修复或恢复上版。" : "Runtime installed, but services are unavailable. Retry updates, repair, or restore the previous version.", zh ? "运行时已安装，但服务尚未连接。可检查更新；连接仍会自动重试。" : "Runtime installed, but services are unavailable. Check for updates; the connection keeps retrying."),
     runtime_pairing_required: zh ? "旧版启动器未能自动选择可用组件。请检查 App 更新，或通过恢复入口重新连接。" : "The older launcher could not select a usable runtime. Check for an App update or reconnect through recovery.",
     idle: zh ? "先打开本地版本，更新在后台准备，下次打开时生效。也可在此手动更新。" : "Open the local version first. Updates prepare in the background and apply on the next open. You can also update here.",
-    runtime_required: zh ? "请完成匹配组件安装，或检查 App 更新。" : "Install matching components or check for an App update.",
+    runtime_required: phaseMessage(zh ? "请完成匹配组件安装，或检查 App 更新。" : "Install matching components or check for an App update.", zh ? "无法准备可用组件。可检查 App 更新；当前安装仍会保留。" : "Components are unavailable. Check for an App update; the current installation is kept."),
     connecting: zh ? "正在连接本地服务…" : "Connecting to local services…",
     checking: state.details?.background ? (zh ? "正在后台检查更新，当前版本可继续使用。" : "Checking in the background. Keep using this version.") : (zh ? "正在检查更新…" : "Checking for updates…"),
-    available: state.details?.prepared ? (zh ? "更新已下载并通过签名校验，下次打开时自动安装。" : "Update downloaded and signature verified. It installs on the next open.") : (zh ? "新版本已就绪，一次更新 App 与匹配的运行时。" : "Update the App and its matching runtime together."),
+    available: state.details?.prepared ? (zh ? "更新已下载并通过签名校验，下次打开时自动安装。" : "Update downloaded and signature verified. It installs on the next open.") : phaseMessage(zh ? "新版本已就绪，一次更新 App 与匹配的运行时。" : "Update the App and its matching runtime together.", zh ? "有新版本可用，可更新 App。" : "A new version is available; the App can be updated."),
     up_to_date: zh ? "当前通道暂无更新。" : "No newer update on this channel.",
     downloading: state.details?.background ? (zh ? "正在后台下载并校验签名，当前版本可继续使用。" : "Downloading and verifying in the background. Keep using this version.") : (zh ? "正在下载并校验签名…" : "Downloading and verifying signature…"),
     installing_app: zh ? "正在安装 App，请保持窗口打开。" : "Installing the App. Keep this window open.",
@@ -190,7 +194,7 @@ export function DesktopUpdate() {
           <option value="main">{zh ? "main 预览版" : "main preview"}</option>
         </select>
       </label>
-      <p>{zh ? "App 与匹配的 CLI 一起更新，服务可能短暂断开。不删除 Goal 数据。" : "Updates the App and matching CLI. Services may briefly disconnect. Goal data is not deleted."}</p>
+      <p>{repairAvailable ? (zh ? "App 与匹配的 CLI 一起更新，服务可能短暂断开。不删除 Goal 数据。" : "Updates the App and matching CLI. Services may briefly disconnect. Goal data is not deleted.") : (zh ? "仅更新 App；服务可能短暂断开。不删除 Goal 数据。" : "Updates the App only. Services may briefly disconnect. Goal data is not deleted.")}</p>
       {invoke ? <>
         <p>{runtimeSelection?.explicit === true ? updateErrors.runtime_selection_explicit[zh ? 0 : 1] : repairAvailable ? (zh ? "启动失败时，可重装当前 App 随附的运行时。" : "If startup fails, reinstall this App's bundled runtime.") : (zh ? "当前 App 无法重装运行时。请恢复上个版本或重新安装完整 App；单独管理的运行时请通过原安装方式维护。" : "This App cannot reinstall the runtime. Restore the previous version or reinstall the complete App; maintain separately managed runtimes through their installer.")}</p>
         <button disabled={working || state.phase === "restart_required" || !repairAvailable} type="button" onClick={() => void run("repair")}>{zh ? "修复当前版本" : "Repair this version"}</button>

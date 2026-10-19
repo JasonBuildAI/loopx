@@ -16,7 +16,7 @@ const server = createServer(async (req, res) => {
   const relative = url.pathname === "/chat/" ? "/chat/index.html" : url.pathname;
   const base = url.pathname.startsWith("/boot/") ? resolve(root, "apps/desktop/loopx-control-plane/static") : resolve(root, "loopx/web");
   const path = resolve(base, `.${url.pathname.startsWith("/boot/") ? url.pathname.slice(5) : relative}`);
-  if (!path.startsWith(`${base}/`)) { res.writeHead(403).end(); return; }
+  if (!path.startsWith(`${base}/`) && !path.startsWith(`${base}\\`)) { res.writeHead(403).end(); return; }
   try { res.setHeader("Content-Type", types[extname(path)] ?? "application/octet-stream"); res.end(await readFile(path)); }
   catch { res.writeHead(404).end(); }
 });
@@ -320,6 +320,18 @@ try {
   await page.getByText("高级选项", { exact: true }).click();
   assert.equal(await page.getByRole("button", { name: "修复当前版本", exact: true }).isEnabled(), true, "legacy native status retains its available repair action");
 
+  // The Windows release cannot reinstall its bundled runtime or roll back:
+  // copy for states without a dedicated code must stop naming those controls.
+  nativeRuntimeSelection = { explicit: false, remembered: true, bundled_repair_available: false };
+  nativeState = { phase: "available", details: { version: "0.5.5", channel: "main" } };
+  await page.reload();
+  await page.getByRole("button", { name: "有可用更新", exact: true }).click();
+  await page.getByText("有新版本可用，可更新 App。", { exact: true }).waitFor();
+  await page.getByText("高级选项", { exact: true }).click();
+  assert.equal(await page.getByRole("button", { name: "修复当前版本", exact: true }).isEnabled(), false, "an unavailable repair must not be advertised");
+  await page.getByText("仅更新 App；服务可能短暂断开。不删除 Goal 数据。", { exact: true }).waitFor();
+  nativeRuntimeSelection = undefined;
+
   const missing = await browser.newPage();
   await missing.route("**/assets/*.js", (route) => route.abort());
   await missing.goto(`${origin}/chat/`);
@@ -434,6 +446,10 @@ try {
     assert.equal(await page.locator(selector).isEnabled(), true, `${selector} remains usable after service failure`);
   }
   await page.screenshot({ path: resolve(output, "startup-recovery.png") });
+  nativeRuntimeSelection = { explicit: false, remembered: true, bundled_repair_available: false };
+  await page.getByText("运行时已安装，但服务尚未连接。可检查更新；连接仍会自动重试。").waitFor();
+  assert.equal(await page.locator("#repair").isEnabled(), false, "boot fallback must match the disabled repair control");
+  nativeRuntimeSelection = undefined;
 
   // A snapshot stuck in a terminal phase must turn the main status line into
   // its error projection (fresh Mac without Python 3.11+: installer exit 2),

@@ -85,7 +85,9 @@ they reuse the same loopback services and Goal state. Apple Silicon macOS suppor
 signed App updates that pair the shell with its bundled runtime, plus repair and
 recovery. Python 3.11+ is required; the App is ad-hoc signed, not notarized.
 Windows NSIS preview installers support the same signed update flow on the main
-channel, with a separately installed CLI; the stable channel and MSI installs stay manual.
+channel, with a separately installed CLI; the stable channel and MSI installs stay
+manual, App rollback and repair are unavailable, and the installer carries no
+Authenticode certificate (Windows may show a SmartScreen prompt).
 [Desktop installation, updates, and source development](apps/desktop/loopx-control-plane/README.md).
 
 <details>

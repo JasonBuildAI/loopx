@@ -53,6 +53,34 @@ def _shutdown_current_runtime() -> None:
         _shutdown_info(info)
 
 
+def _damaged_locator(
+    *,
+    fingerprint: str,
+    pid: int,
+    token: str = "fixture-token",
+) -> effect_runtime._RuntimeLocatorRead:
+    return effect_runtime._RuntimeLocatorRead(
+        info=None,
+        present=True,
+        diagnostic_code="runtime_locator_schema_mismatch",
+        recorded_pid_alive=True,
+        raw_payload={
+            "schema_version": "loopx_effect_runtime_info_v1",
+            "fingerprint": fingerprint,
+            "pid": pid,
+            "host": "127.0.0.1",
+            "port": 12345,
+            "token": token,
+        },
+    )
+
+
+def _prepare_recovery(monkeypatch, *, fingerprint: str, pid: int) -> None:
+    locator = _damaged_locator(fingerprint=fingerprint, pid=pid)
+    monkeypatch.setattr(effect_runtime, "_read_info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(effect_runtime, "_inspect_info", lambda *args, **kwargs: locator)
+
+
 def test_corrupt_schema_version_reuses_live_runtime_and_reports_its_liveness(
     tmp_path: Path,
     monkeypatch,
@@ -101,6 +129,90 @@ def test_corrupt_schema_version_reuses_live_runtime_and_reports_its_liveness(
                 replacement = None
             if isinstance(replacement, dict):
                 _shutdown_info(replacement)
+
+
+def test_recovery_rejects_a_ping_from_a_different_pid(monkeypatch) -> None:
+    fingerprint = effect_runtime._runtime_fingerprint()
+    info_path = effect_runtime._runtime_info_path(fingerprint)
+    _prepare_recovery(monkeypatch, fingerprint=fingerprint, pid=os.getpid())
+    monkeypatch.setattr(
+        effect_runtime,
+        "_request_with_info",
+        lambda *args, **kwargs: {
+            "result": {
+                "ready": True,
+                "pid": os.getpid() + 1,
+                "fingerprint": fingerprint,
+                "info_path": str(info_path),
+            }
+        },
+    )
+
+    assert effect_runtime._runtime_info_for_request(
+        info_path, fingerprint=fingerprint
+    ) is None
+
+
+def test_recovery_rejects_a_token_the_daemon_does_not_accept(monkeypatch) -> None:
+    fingerprint = effect_runtime._runtime_fingerprint()
+    info_path = effect_runtime._runtime_info_path(fingerprint)
+    _prepare_recovery(monkeypatch, fingerprint=fingerprint, pid=os.getpid())
+
+    def reject(*args, **kwargs):
+        raise RuntimeError("runtime.ping rejected")
+
+    monkeypatch.setattr(effect_runtime, "_request_with_info", reject)
+
+    assert effect_runtime._runtime_info_for_request(
+        info_path, fingerprint=fingerprint
+    ) is None
+
+
+def test_recovery_rejects_a_ping_with_a_different_fingerprint(monkeypatch) -> None:
+    fingerprint = effect_runtime._runtime_fingerprint()
+    info_path = effect_runtime._runtime_info_path(fingerprint)
+    _prepare_recovery(monkeypatch, fingerprint=fingerprint, pid=os.getpid())
+    monkeypatch.setattr(
+        effect_runtime,
+        "_request_with_info",
+        lambda *args, **kwargs: {
+            "result": {
+                "ready": True,
+                "pid": os.getpid(),
+                "fingerprint": "0" * 64,
+                "info_path": str(info_path),
+            }
+        },
+    )
+
+    assert effect_runtime._runtime_info_for_request(
+        info_path, fingerprint=fingerprint
+    ) is None
+
+
+def test_recovery_rejects_a_ping_published_at_a_different_locator_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fingerprint = effect_runtime._runtime_fingerprint()
+    info_path = effect_runtime._runtime_info_path(fingerprint)
+    _prepare_recovery(monkeypatch, fingerprint=fingerprint, pid=os.getpid())
+    monkeypatch.setattr(
+        effect_runtime,
+        "_request_with_info",
+        lambda *args, **kwargs: {
+            "result": {
+                "ready": True,
+                "pid": os.getpid(),
+                "fingerprint": fingerprint,
+                "info_path": str(tmp_path / "other-runtime.json"),
+            }
+        },
+    )
+
+    assert effect_runtime._runtime_info_for_request(
+        info_path, fingerprint=fingerprint
+    ) is None
 
 
 def test_unreadable_locator_reports_a_diagnostic_instead_of_looking_absent(

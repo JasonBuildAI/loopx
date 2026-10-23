@@ -618,6 +618,23 @@ Windows 原生路径资格检查把 brief JSON 上限调至 10,800，Markdown �
 同时保留已测 523 字符内容增量和路径转义余量。这是两项预算的组合，不能作为
 新的 Windows 原生实测；原始路径测量、行数和语义检查仍保留其各自边界。
 
+Complete executable routes also render the owned fixture root once per action.
+The same 36-Todo / 12-run crowded quota JSON emits 39,810 characters from the
+short calibration root and 40,860 from a 58-character owned root (31 serialized
+characters per root character). The hosted Windows runner owns a 53-character
+root and measured 40,806, above the previous 40,000 ceiling. The crowded JSON
+ceiling is now 41,200; complete routes, line, growth and semantic limits stay
+unchanged. This is a measured host-path allowance, not a new semantic payload,
+and a focused regression extrapolates the serialized cost from two owned root
+lengths and requires the 53-character native root to fit.
+
+完整可执行路径会在每个 action 中渲染一次夹具根目录。同一 36 Todo／12 run 的
+crowded quota JSON 在短校准根目录下为 39,810 字符，在 58 字符根目录下为 40,860，
+即每个根字符约 31 个序列化字符。托管 Windows runner 的根目录为 53 字符，实测
+40,806，超过原 40,000 上限。crowded JSON 上限调整为 41,200，完整路径、行数、
+增长和语义限制不变。这是实测的主机路径余量而非新的语义载荷；聚焦回归用两个根目录
+长度外推序列化成本，并要求 53 字符原生根目录落在上限内。
+
 The frozen 128-character Windows-spelling fixture was also compared on main
 `b5a1a816a` and the rebased outcome candidate without changing its routes.
 The body grows from 5,556 to 6,079 characters and Markdown from 8,579 to 9,102:

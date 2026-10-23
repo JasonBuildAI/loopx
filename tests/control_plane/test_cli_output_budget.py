@@ -1816,6 +1816,53 @@ def test_long_path_budget_is_independent_of_runner_temp_prefix(
     test_brief_budget_retains_full_commands_on_real_long_paths()
 
 
+def _crowded_quota_json_measurement(root: Path) -> tuple[int, dict]:
+    with _stable_budget_fixture_root(root) as stable_root:
+        project, runtime, registry_path, state_file = _write_fixture(
+            stable_root, SCENARIOS[1],
+        )
+        import_fixture_authority(registry_path, GOAL_ID)
+        command = _surface_commands(
+            project=project,
+            runtime=runtime,
+            registry_path=registry_path,
+            state_file=state_file,
+            output_format="json",
+        )["quota_should_run"]
+        exit_code, text = _invoke_cli(command)
+    assert exit_code == 0, text
+    return len(str(budget_fixture_path(root))), measure_cli_output(
+        text, output_format="json",
+    )
+
+
+def test_crowded_quota_budget_covers_the_hosted_runner_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Complete executable routes render the owned root once per route. The
+    # hosted Windows runner owns a 53-character root under %TEMP%; a longer
+    # ambient root is therefore already a stronger layout than the runner.
+    # Measure the serialization cost per root character here instead of
+    # depending on the host's temporary namespace.
+    ambient_root, ambient = _crowded_quota_json_measurement(tmp_path / "ambient")
+    long_parent = tmp_path / ("nested-crowded-quota-" + "p" * 8)
+    long_parent.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(long_parent))
+    long_root, longer = _crowded_quota_json_measurement(tmp_path / "longer")
+    assert long_root > ambient_root
+    per_root_character = (longer["chars"] - ambient["chars"]) / (
+        long_root - ambient_root
+    )
+    assert per_root_character > 0
+    hosted_runner_root = 53
+    native_chars = ambient["chars"] + round(
+        per_root_character * (hosted_runner_root - ambient_root)
+    )
+    assert native_chars <= CLI_OUTPUT_BUDGET_BY_ID["quota_should_run"].max_chars[
+        "crowded"
+    ]["json"]
+
+
 @pytest.mark.parametrize("nested_temp", [False, True])
 def test_long_path_budget_uses_native_temp_without_a_drive_root_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nested_temp: bool,

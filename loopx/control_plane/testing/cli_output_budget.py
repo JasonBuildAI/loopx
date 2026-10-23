@@ -151,7 +151,11 @@ CLI_OUTPUT_BUDGET_SPECS: tuple[CliOutputBudgetSpec, ...] = (
             # Per-Todo and fixed semantic growth are accounted for separately.
             # Canonical source witnesses use the full Markdown context carrier;
             # the unchanged 36-Todo fixture emits 10,225 chars / 166 lines.
-            "crowded": {"json": 40_000, "markdown": 10_500},
+            # Complete executable routes render the owned root once per action:
+            # the short calibration root emits 39,810 JSON chars, while the
+            # 53-character hosted Windows runner root emits 40,806 (31 chars per
+            # root character). Keep the full routes and cover that native layout.
+            "crowded": {"json": 41_200, "markdown": 10_500},
             # Matched canonical base/head both emit 24,820 JSON characters.
             "multi_agent": {"json": 25_500, "markdown": 7_000},
         },

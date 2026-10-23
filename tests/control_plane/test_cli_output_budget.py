@@ -1861,6 +1861,13 @@ def test_crowded_quota_budget_covers_the_hosted_runner_root(
     assert native_chars <= CLI_OUTPUT_BUDGET_BY_ID["quota_should_run"].max_chars[
         "crowded"
     ]["json"]
+    # The raise covers host-path rendering only: at the 24-character
+    # calibration root the same payload still fits the original 40,000 bound.
+    calibration_root = 24
+    semantic_chars = ambient["chars"] + round(
+        per_root_character * (calibration_root - ambient_root)
+    )
+    assert semantic_chars <= 40_000
 
 
 @pytest.mark.parametrize("nested_temp", [False, True])

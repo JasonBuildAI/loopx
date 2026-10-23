@@ -62,14 +62,30 @@ def render_optional_cli_arg(flag: str, value: str | None) -> str:
     return f" {flag} {shell_arg_for_host(value)}"
 
 
+def host_command(value: str) -> str:
+    """Render an executable as the first token of a host-shell command."""
+
+    return install_contract.host_command_name(value)
+
+
+def render_turn_bootstrap(*, value: str = "<current_time_iso>") -> str:
+    """Assign the per-wake Turn identity with the host shell's syntax."""
+
+    if _is_windows_host():
+        return f'$LOOPX_TURN = "{value}"'
+    return f"LOOPX_TURN={value}"
+
+
 def render_cli_command_prefix(
     *,
     cli_bin: str = "loopx",
     runtime_root: str | Path | None = None,
     registry_path: str | Path | None = None,
 ) -> str:
-    prefix = " ".join(shell_arg_for_host(arg) for arg in loopx_cli_argv(
-        None if cli_bin == "loopx" else cli_bin))
+    argv = loopx_cli_argv(None if cli_bin == "loopx" else cli_bin)
+    prefix = " ".join(
+        [host_command(argv[0]), *(shell_arg_for_host(arg) for arg in argv[1:])]
+    )
     if runtime_root is not None:
         prefix += f" --runtime-root {shell_arg_for_host(str(runtime_root))}"
     if registry_path is not None:
@@ -191,7 +207,11 @@ def render_quota_guard_command(
         scheduler_execution_context=scheduler_execution_context,
     )
     if heartbeat_turn_receipt:
-        turn_arg = ' --turn-instance-id "${LOOPX_TURN:?}"'
+        turn_arg = (
+            " --turn-instance-id $LOOPX_TURN"
+            if _is_windows_host()
+            else ' --turn-instance-id "${LOOPX_TURN:?}"'
+        )
     elif begin_turn:
         turn_arg = " --begin-turn"
     else:
@@ -510,7 +530,7 @@ def render_codex_cli_bootstrap_connect_command(
     cli_bin: str,
 ) -> str:
     command = (
-        f"{shell_arg_for_host(cli_bin)} bootstrap"
+        f"{host_command(cli_bin)} bootstrap"
         " --project ."
         f" --goal-id {shell_arg_for_host(goal_id)}"
         f" --adapter-kind {shell_arg_for_host(DEFAULT_HANDOFF_ADAPTER_KIND)}"

@@ -233,7 +233,6 @@ def test_preflight_commands_follow_the_host_platform(
 ) -> None:
     monkeypatch.setattr(install_contract, "_is_windows_host", lambda: os_name == "nt")
     if os_name == "nt":
-        pretend_module_root(monkeypatch, tmp_path / "site-packages")
         monkeypatch.setattr(sys, "executable", PLAIN_WINDOWS_INTERPRETER)
     doctor = install_contract.doctor_preflight_command(cli_bin="loopx-canary")
     codex = install_contract.codex_cli_install_preflight(
@@ -244,15 +243,15 @@ def test_preflight_commands_follow_the_host_platform(
         for command in (doctor, codex):
             for token in POSIX_ONLY_TOKENS:
                 assert token not in command, command
-        assert "Get-Command" in doctor
+            assert "Get-Command" in command
+            assert "pwsh" not in command
+            assert powershell_literal(PLAIN_WINDOWS_INTERPRETER) in command
         assert doctor.splitlines()[-1] == "loopx-canary doctor | Out-Null"
-        assert powershell_literal(PLAIN_WINDOWS_INTERPRETER) in doctor
-        assert codex.splitlines()[0] == (
-            f"& {powershell_literal(PLAIN_WINDOWS_INTERPRETER)} "
-            "-m pip install --upgrade loopx"
-        )
         assert "loopx-canary workflow-skills --install" in codex
-        assert f"loopx-canary doctor --agent-type {powershell_literal('codex-cli')}" in codex
+        assert (
+            f"loopx-canary doctor --agent-type {powershell_literal('codex-cli')} | Out-Null"
+            in codex
+        )
     else:
         assert doctor.startswith('export PATH="$HOME/.local/bin:$PATH"')
         assert "loopx-canary doctor >/dev/null" in doctor
@@ -267,7 +266,6 @@ def test_preflight_commands_parse_as_powershell(
     pwsh = PWSH
     assert pwsh is not None
     pretend_windows_host(monkeypatch, PLAIN_WINDOWS_INTERPRETER)
-    pretend_module_root(monkeypatch, tmp_path / "site-packages")
     commands = {
         "doctor": install_contract.doctor_preflight_command(),
         "codex": install_contract.codex_cli_install_preflight(doctor_agent_type="codex-cli"),

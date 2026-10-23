@@ -48,6 +48,14 @@ def _powershell_command(value: str) -> str:
     return f"& {_powershell_literal(value)}"
 
 
+def host_command_name(value: str) -> str:
+    """Render an executable as the first token of a host-shell command."""
+
+    if _is_windows_host():
+        return _powershell_command(value)
+    return shlex.quote(value)
+
+
 def _is_windows_host() -> bool:
     """Whether printed commands target PowerShell instead of a POSIX shell."""
 
@@ -69,16 +77,13 @@ def _checkout_snapshot_installer(repo_root: Path) -> Path | None:
     return None
 
 
-def _windows_pypi_upgrade_command(
-    *, doctor_agent_arg: str, skip_skills: bool, cli_bin: str = "loopx"
-) -> str:
+def _windows_pypi_upgrade_command(*, doctor_agent_arg: str, skip_skills: bool) -> str:
     """No-clone upgrade through the interpreter that owns this installation."""
 
-    command = _powershell_command(cli_bin)
     lines = [f"& {_powershell_literal(sys.executable)} -m pip install --upgrade loopx"]
     if not skip_skills:
-        lines.append(f"{command} workflow-skills --install")
-    lines.append(f"{command} doctor{doctor_agent_arg}")
+        lines.append(DEFAULT_WORKFLOW_SKILL_INSTALL_COMMAND)
+    lines.append(f"loopx doctor{doctor_agent_arg}")
     return "\n".join(lines)
 
 
@@ -99,7 +104,6 @@ def no_clone_upgrade_command(
     *,
     doctor_agent_type: str | None = None,
     skip_skills: bool = False,
-    cli_bin: str = "loopx",
 ) -> str:
     if _is_windows_host():
         repo_root = Path(__file__).resolve().parents[1]
@@ -111,12 +115,10 @@ def no_clone_upgrade_command(
         if _checkout_snapshot_installer(repo_root) is not None:
             return (
                 f"{local_install_command(repo_root, skip_skills=skip_skills)}\n"
-                f"{_powershell_command(cli_bin)} doctor{doctor_agent_arg}"
+                f"loopx doctor{doctor_agent_arg}"
             )
         return _windows_pypi_upgrade_command(
-            doctor_agent_arg=doctor_agent_arg,
-            skip_skills=skip_skills,
-            cli_bin=cli_bin,
+            doctor_agent_arg=doctor_agent_arg, skip_skills=skip_skills
         )
     ref = str(source_ref or "").strip()
     installer = f"curl -fsSL {NO_CLONE_INSTALL_URL}"
@@ -137,54 +139,59 @@ def no_clone_upgrade_command(
     return (
         f"{installer}\n"
         'export PATH="$HOME/.local/bin:$PATH"\n'
-        f"{shlex.quote(cli_bin)} doctor{doctor_agent_arg}"
+        f"loopx doctor{doctor_agent_arg}"
     )
 
 
-def install_repair_command(*, cli_bin: str = "loopx") -> str:
+def install_repair_command() -> str:
     """PyPI repair guidance that runs as printed on this host."""
 
     if _is_windows_host():
-        return _windows_pypi_upgrade_command(
-            doctor_agent_arg="", skip_skills=False, cli_bin=cli_bin
-        )
-    if cli_bin == "loopx":
-        return DEFAULT_INSTALL_REPAIR_COMMAND
-    quoted_cli = shlex.quote(cli_bin)
-    return (
-        f"{DEFAULT_INSTALL_COMMAND}\n"
-        f"{quoted_cli} workflow-skills --install --cli-bin {quoted_cli}\n"
-        f"{quoted_cli} doctor"
-    )
+        return _windows_pypi_upgrade_command(doctor_agent_arg="", skip_skills=False)
+    return DEFAULT_INSTALL_REPAIR_COMMAND
 
 
-def archive_fallback_install_command(*, cli_bin: str = "loopx") -> str:
+def archive_fallback_install_command() -> str:
     """Archive fallback guidance that runs as printed on this host."""
 
     if _is_windows_host():
-        return no_clone_upgrade_command(cli_bin=cli_bin)
-    if cli_bin == "loopx":
-        return ARCHIVE_FALLBACK_INSTALL_COMMAND
-    return (
-        f"curl -fsSL {NO_CLONE_INSTALL_URL} | bash\n"
-        'export PATH="$HOME/.local/bin:$PATH"\n'
-        f"{shlex.quote(cli_bin)} doctor"
-    )
+        return no_clone_upgrade_command()
+    return ARCHIVE_FALLBACK_INSTALL_COMMAND
 
 
-def doctor_preflight_command(*, cli_bin: str = "loopx") -> str:
+def doctor_preflight_command(
+    *,
+    cli_bin: str = "loopx",
+    doctor_agent_type: str | None = None,
+    install_skills: bool = False,
+) -> str:
     """Ensure the CLI is reachable without upgrading on every scheduled turn."""
 
     if _is_windows_host():
-        return "\n".join(
-            [
-                f"if (-not (Get-Command {_powershell_literal(cli_bin)} -ErrorAction SilentlyContinue)) {{",
-                f"  & {_powershell_literal(sys.executable)} -m pip install --upgrade loopx",
-                "}",
-                f"{_powershell_command(cli_bin)} doctor | Out-Null",
-            ]
+        doctor_arg = (
+            f" --agent-type {_powershell_literal(doctor_agent_type)}"
+            if doctor_agent_type
+            else ""
         )
+        install_lines = [
+            f"if (-not (Get-Command {_powershell_literal(cli_bin)} -ErrorAction SilentlyContinue)) {{",
+            f"  & {_powershell_literal(sys.executable)} -m pip install --upgrade loopx",
+        ]
+        if install_skills:
+            install_lines.append(
+                f"  {_powershell_command(cli_bin)} workflow-skills --install"
+            )
+        install_lines.append("}")
+        install_lines.append(
+            f"{_powershell_command(cli_bin)} doctor{doctor_arg} | Out-Null"
+        )
+        return "\n".join(install_lines)
     cli_bin_arg = shlex.quote(cli_bin)
+    doctor_arg = (
+        f" --agent-type {shlex.quote(doctor_agent_type)}"
+        if doctor_agent_type
+        else ""
+    )
     return f"""export PATH="$HOME/.local/bin:$PATH"
 install_script="$HOME/loopx/scripts/install-local.sh"
 if ! command -v {cli_bin_arg} >/dev/null 2>&1; then
@@ -196,7 +203,7 @@ if ! command -v {cli_bin_arg} >/dev/null 2>&1; then
     exit 1
   fi
 fi
-{cli_bin_arg} doctor >/dev/null"""
+{cli_bin_arg} doctor{doctor_arg} >/dev/null"""
 
 
 def codex_cli_install_preflight(
@@ -207,9 +214,10 @@ def codex_cli_install_preflight(
     """Install-or-doctor guidance a Codex CLI operator can paste on this host."""
 
     if _is_windows_host():
-        return no_clone_upgrade_command(
-            doctor_agent_type=doctor_agent_type,
+        return doctor_preflight_command(
             cli_bin=cli_bin,
+            doctor_agent_type=doctor_agent_type,
+            install_skills=True,
         )
     cli_bin_arg = shlex.quote(cli_bin)
     doctor_agent_arg = (

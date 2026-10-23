@@ -13,13 +13,19 @@ import pytest
 import loopx.project_prompt as project_prompt
 from loopx import install_contract
 from loopx.agent_onboarding import build_agent_onboarding_packet
+from loopx.control_plane.heartbeat.task_body import (
+    bind_exact_turn_settlement_task_body,
+)
 from loopx.project_prompt import (
     build_codex_cli_bootstrap_message,
     build_new_project_prompt,
     render_cli_preflight,
+    render_quota_guard_command,
+    render_turn_bootstrap,
 )
 
 PWSH = shutil.which("pwsh")
+SH = shutil.which("sh")
 GOAL_ID = "windows-onboarding-host"
 POSIX_ONLY_TOKENS = (
     "python3 ",
@@ -92,6 +98,7 @@ def test_windows_agent_onboard_prints_powershell_commands(
 
     for key in ("doctor_or_install", "bootstrap_command_pack", "agent_onboard_recheck"):
         assert_powershell_ready(str(commands[key]))
+    assert "Get-Command" in str(commands["doctor_or_install"])
     assert "project''s" in str(commands["bootstrap_command_pack"])
     assert "project''s" in str(commands["agent_onboard_recheck"])
 
@@ -204,3 +211,98 @@ def test_generated_windows_onboarding_commands_run_in_powershell(tmp_path: Path)
     preflight_script.write_text(str(payload["cli_preflight"]), encoding="utf-8")
     preflight = run_powershell(pwsh, preflight_script, env=environment, cwd=project)
     assert preflight.returncode == 0, preflight.stdout + preflight.stderr
+
+
+def test_windows_executable_path_uses_powershell_call_operator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pretend_windows_host(monkeypatch)
+    cli = r"C:\Program Files\LoopX\loopx.exe"
+    project = tmp_path / "project"
+    project.mkdir()
+
+    message = build_codex_cli_bootstrap_message(
+        project=project,
+        goal_id=GOAL_ID,
+        agent_id="host-agent",
+        cli_bin=cli,
+    )
+    assert message["connect_command"].splitlines()[1].startswith(
+        f"& '{cli}' bootstrap"
+    )
+    packet = build_agent_onboarding_packet(
+        project=project,
+        agent_type="codex-cli",
+        goal_id=GOAL_ID,
+        agent_id="host-agent",
+        cli_bin=cli,
+    )
+    commands = packet["commands"]
+    assert isinstance(commands, dict)
+    assert commands["agent_onboard_recheck"].startswith(f"& '{cli}' agent-onboard")
+    assert f"& '{cli}'" in str(commands["bootstrap_command_pack"])
+    assert f"& '{cli}'" in str(commands["doctor_or_install"])
+
+
+def test_windows_heartbeat_turn_identity_uses_powershell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pretend_windows_host(monkeypatch)
+
+    assert render_turn_bootstrap() == '$LOOPX_TURN = "<current_time_iso>"'
+    guard = render_quota_guard_command("goal", heartbeat_turn_receipt=True)
+    assert "--turn-instance-id $LOOPX_TURN" in guard
+    assert "${LOOPX_TURN" not in guard
+    body = f"```sh\n{render_turn_bootstrap()}\n{guard}\n```"
+    bound = bind_exact_turn_settlement_task_body(
+        body,
+        turn_instance_id="2026-10-23T00:00:00Z",
+    )
+    assert '$LOOPX_TURN = "2026-10-23T00:00:00Z"' in bound
+    assert "${LOOPX_TURN" not in bound
+
+
+def test_posix_heartbeat_turn_identity_keeps_shell_assignment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(install_contract, "_is_windows_host", lambda: False)
+    monkeypatch.setattr(project_prompt, "_is_windows_host", lambda: False)
+
+    assert render_turn_bootstrap() == "LOOPX_TURN=<current_time_iso>"
+    guard = render_quota_guard_command("goal", heartbeat_turn_receipt=True)
+    assert '--turn-instance-id "${LOOPX_TURN:?}"' in guard
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or SH is None,
+    reason="requires a POSIX shell to parse the printed command",
+)
+def test_posix_connect_commands_are_valid_shell(tmp_path: Path) -> None:
+    sh = SH
+    assert sh is not None
+    project = tmp_path / "project's"
+    project.mkdir()
+    payload = build_new_project_prompt(
+        project=project,
+        goal_doc=project / "GOAL.md",
+        goal_id=GOAL_ID,
+        objective="Verify host-runnable onboarding",
+        domain="example",
+        adapter_kind="read_only_project_map_v0",
+        adapter_status="connected-read-only",
+        next_probe=None,
+        spawn_allowed=False,
+        allowed_domains=None,
+        write_scope=None,
+    )
+    for command in (payload["connect_command"], payload["cli_preflight"]):
+        text = str(command)
+        assert "\\\n" not in text
+        completed = subprocess.run(
+            [sh, "-n"],
+            input=text,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        assert completed.returncode == 0, completed.stderr

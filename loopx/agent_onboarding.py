@@ -26,6 +26,7 @@ from .kiro_cli_goal_mode import (
     SKILLS_ROOT_LABEL as KIRO_CLI_SKILLS_ROOT_LABEL,
 )
 from .project_prompt import (
+    host_command,
     render_available_capability_args,
     render_codex_cli_install_preflight,
     render_quota_guard_command,
@@ -47,30 +48,30 @@ CHANGE_QUALITY_SKILL_ID = "loopx-change-quality"
 
 def _surface_install_command(agent_type: str, cli_bin: str, project: str) -> str | None:
     if agent_type in {"codex-app", "codex-app-ssh", "codex-ide-plugin", "codex-cli"}:
-        return f"{shell_arg_for_host(cli_bin)} slash-commands --install --surface codex"
+        return f"{host_command(cli_bin)} slash-commands --install --surface codex"
     if agent_type == "claude-code":
-        return f"{shell_arg_for_host(cli_bin)} slash-commands --install --surface claude-code"
+        return f"{host_command(cli_bin)} slash-commands --install --surface claude-code"
     if agent_type == "opencode":
         return (
-            f"{shell_arg_for_host(cli_bin)} slash-commands --install --surface opencode "
+            f"{host_command(cli_bin)} slash-commands --install --surface opencode "
             "--with-goal-bridge"
         )
     if agent_type == "gemini-cli":
-        return f"{shell_arg_for_host(cli_bin)} slash-commands --install --surface gemini"
+        return f"{host_command(cli_bin)} slash-commands --install --surface gemini"
     if agent_type == "cursor-agent":
-        return f"{shell_arg_for_host(cli_bin)} slash-commands --install --surface cursor"
+        return f"{host_command(cli_bin)} slash-commands --install --surface cursor"
     if agent_type == "zcode":
-        return f"{shell_arg_for_host(cli_bin)} slash-commands --install --surface zcode"
+        return f"{host_command(cli_bin)} slash-commands --install --surface zcode"
     if agent_type == "agy":
-        return f"{shell_arg_for_host(cli_bin)} slash-commands --install --surface agy"
+        return f"{host_command(cli_bin)} slash-commands --install --surface agy"
     if agent_type == "kiro-cli":
-        return f"{shell_arg_for_host(cli_bin)} slash-commands --install --surface kiro-cli"
+        return f"{host_command(cli_bin)} slash-commands --install --surface kiro-cli"
     if agent_type == "pi":
         # The slash-commands installer resolves the Pi extension target through
         # --pi-project; pass the resolved project so the command stays correct
         # when agent-onboard runs from any cwd.
         return (
-            f"{shell_arg_for_host(cli_bin)} slash-commands --install --surface pi "
+            f"{host_command(cli_bin)} slash-commands --install --surface pi "
             f"--pi-project {shell_arg_for_host(project)}"
         )
     return None
@@ -103,7 +104,7 @@ def _project_skill_command(
     execute: bool = False,
 ) -> str:
     parts = [
-        shell_arg_for_host(cli_bin),
+        host_command(cli_bin),
         "project-skill",
         command,
         "--project",
@@ -304,7 +305,7 @@ def _bootstrap_pack_command(
         "other-agent": "other-agent",
     }
     parts = [
-        shell_arg_for_host(cli_bin),
+        host_command(cli_bin),
         "bootstrap-command-pack",
         "--project",
         shell_arg_for_host(project),
@@ -515,7 +516,7 @@ def build_agent_onboarding_packet(
             else None
         ),
         "agent_onboard_recheck": (
-            f"{shell_arg_for_host(cli_bin)} agent-onboard "
+            f"{host_command(cli_bin)} agent-onboard "
             f"--agent-type {shell_arg_for_host(canonical_agent_type)} "
             f"--project {shell_arg_for_host(resolved_project)} "
             f"--goal-id {shell_arg_for_host(resolved_goal_id)}"
@@ -531,7 +532,7 @@ def build_agent_onboarding_packet(
         commands["install_command_facade"] = install_command
     if canonical_agent_type == "codex-cli":
         commands["codex_cli_bootstrap_message"] = (
-            f"{shell_arg_for_host(cli_bin)} codex-cli-bootstrap-message "
+            f"{host_command(cli_bin)} codex-cli-bootstrap-message "
             f"--project {shell_arg_for_host(resolved_project)} "
             f"--goal-id {shell_arg_for_host(resolved_goal_id)}"
             + (

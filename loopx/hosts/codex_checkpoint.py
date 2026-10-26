@@ -106,6 +106,11 @@ def _verify_interrupted_guard(turns: list[dict], guard: dict) -> None:
         except (SystemExit, ValueError) as error:
             raise ValueError("native pending guard arguments are invalid") from error
     args = arguments(item.get("command", ""))
+    # An omitted --context-delivery is the rendered form of the default-off
+    # mode: the CLI keeps "unspecified" distinct from an explicit off so machine
+    # defaults can apply, while the renderer only spells the option when on.
+    if args.get("context_delivery") is None:
+        args["context_delivery"] = "off"
     # Older sealed interrupted guards were captured with mandatory envelopes.
     # New captures bind the explicit execution mode; neither format opts in.
     turn_envelope = guard.get("turn_envelope", True)

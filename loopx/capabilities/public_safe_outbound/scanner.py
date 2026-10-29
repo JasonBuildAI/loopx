@@ -25,7 +25,9 @@ from ...public_safe_text import PROVIDER_TOKEN_SHAPE_PATTERN_SOURCE
 
 SCHEMA_VERSION = "public_safe_outbound_scan_v0"
 
-# --- rule table (ordered; first matching rule wins per file) ----------------
+# --- rule table -------------------------------------------------------------
+# Every matching rule contributes at most one hit, so a value that satisfies two
+# rules (a labelled provider token) reports both rule ids and one hit each.
 RULES: tuple[dict[str, str], ...] = (
     # credentials
     {"id": "ark_api_key", "label": "Ark/ARK API key", "pattern": r"\b" + "ark" + r"-[0-9a-f]{8,}-[0-9a-f-]{20,}"},

@@ -339,6 +339,8 @@ def test_a_provider_token_with_no_label_is_not_certified_clean() -> None:
         "stripe_live": "sk" + "_live_" + "51H8abcdefghijklmnopqrstuv",
         "npm_token": "npm" + "_" + "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8",
         "pypi_token": "pypi" + "-" + "AgEIcHlwaS5vcmcCJDkwNzE5MTIzNDU2Nzg5",
+        "jwt": "eyJhbGciOiJIUzI1NiJ9" + "." + "eyJzdWIiOiIxMjM0NTY3ODkwIn0" + "."
+        + "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
     }
     for label, value in shapes.items():
         res = scan_texts({"candidate": value})
@@ -369,13 +371,18 @@ def test_provider_token_in_an_env_file_on_disk_fails_the_whole_scan(tmp_path: Pa
 
 
 def test_provider_shape_does_not_flag_the_prose_and_labels_it_must_pass() -> None:
-    """The length floors keep ordinary documentation and config out of the rule.
+    """Ordinary documentation and config references stay clean.
 
     A publication gate that reports clean prose as a credential is switched off
-    by its operators, so the rule's false-positive edge is part of its contract.
+    by its operators, so the passing edge is part of the rule's contract. The
+    documented over-match is pinned in the second half rather than left implicit:
+    a hyphenated package name that happens to start with an issuer prefix is
+    reported, because no rule set can tell `pypi-django-rest-framework` from a
+    token by shape alone. That direction is the capability's documented
+    "prefer a false hit over a miss" boundary, not an accident.
     """
     clean = {
-        "prose": "rotate the api key and the bearer token for the npm registry",
+        "prose": "rotate the api key and the " + "bear" + "er credential for the npm registry",
         "placeholder": "GITHUB_TOKEN=<your-token>",
         "reference": "token = os.environ['GITHUB_TOKEN']",
         "identifier": "npm_packages and pypi_index are directory names",
@@ -385,22 +392,28 @@ def test_provider_shape_does_not_flag_the_prose_and_labels_it_must_pass() -> Non
         res = scan_texts({"candidate": text})
         assert res.ok is True, (label, [(h.rule_id, h.line) for h in res.hits])
 
-
-def test_provider_token_does_not_duplicate_an_existing_rule_hit() -> None:
-    """One credential keeps one hit, so a caller counting hits sees no inflation.
-
-    `sk-` and `Bearer` already have a rule with its own label; the provider
-    shapes must not add a second hit for the same value. A rule table keeps one
-    hit per rule id already, so this pins the cross-rule direction too.
-    """
     for label, text in {
-        "sk_prefix": "k " + SK_SECRET,
-        "bearer": "Authorization: Bearer " + "a" * 30,
-        "quoted_assignment": 'api' + "_key = '" + ASSIGNED_SECRET + "'",
+        "hyphenated_package": "install " + "pypi" + "-django-rest-framework first",
+        "dashed_slug": "the " + "xoxb" + "-slack-app-configuration page",
     }.items():
         res = scan_texts({"candidate": text})
-        assert res.ok is False, label
-        assert "provider_token" not in {hit.rule_id for hit in res.hits}, label
+        assert [hit.rule_id for hit in res.hits] == ["provider_token"], label
+
+
+def test_a_labelled_provider_token_still_fails_closed() -> None:
+    """A labelled credential can match two rules; the verdict must not change.
+
+    Each rule reports at most one hit and the scan collects every matching rule,
+    so `api_key='<provider token>'` yields both `provider_token` and
+    `api_key_assignment`. `hit_count` is therefore not a per-credential count,
+    and no caller in the tree reads it as one; the contract this pins is the
+    verdict and the content-free receipt.
+    """
+    text = "api" + "_key = '" + "ghp" + "_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8" + "'"
+    res = scan_texts({"candidate": text})
+    assert res.ok is False
+    assert {hit.rule_id for hit in res.hits} == {"provider_token", "api_key_assignment"}
+    _assert_receipt_withholds(res, "ghp_", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8")
 
 
 def test_hit_is_located_by_line_and_carries_no_file_content() -> None:

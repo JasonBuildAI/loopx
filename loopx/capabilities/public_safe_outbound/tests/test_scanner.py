@@ -376,10 +376,10 @@ def test_provider_shape_does_not_flag_the_prose_and_labels_it_must_pass() -> Non
     A publication gate that reports clean prose as a credential is switched off
     by its operators, so the passing edge is part of the rule's contract. The
     documented over-match is pinned in the second half rather than left implicit:
-    a hyphenated package name that happens to start with an issuer prefix is
-    reported, because no rule set can tell `pypi-django-rest-framework` from a
-    token by shape alone. That direction is the capability's documented
-    "prefer a false hit over a miss" boundary, not an accident.
+    a hyphenated package slug that happens to start with an issuer prefix is
+    reported, because no rule set can tell such a slug from a token by shape
+    alone. That direction is the capability's documented "prefer a false hit
+    over a miss" boundary, not an accident.
     """
     clean = {
         "prose": "rotate the api key and the " + "bear" + "er credential for the npm registry",
@@ -404,10 +404,10 @@ def test_a_labelled_provider_token_still_fails_closed() -> None:
     """A labelled credential can match two rules; the verdict must not change.
 
     Each rule reports at most one hit and the scan collects every matching rule,
-    so `api_key='<provider token>'` yields both `provider_token` and
-    `api_key_assignment`. `hit_count` is therefore not a per-credential count,
-    and no caller in the tree reads it as one; the contract this pins is the
-    verdict and the content-free receipt.
+    so a quoted credential assignment whose value is also a provider token yields
+    both `provider_token` and the assignment rule. `hit_count` is therefore not a
+    per-credential count, and no caller in the tree reads it as one; the contract
+    this pins is the verdict and the content-free receipt.
     """
     text = "api" + "_key = '" + "ghp" + "_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8" + "'"
     res = scan_texts({"candidate": text})

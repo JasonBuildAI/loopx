@@ -431,6 +431,10 @@ def test_existing_busy_pause_reenters_new_readonly_preflight(native, tmp_path):
 def test_native_restart_uses_real_accepted_work_fence_before_app_quit(native, monkeypatch, tmp_path, status):
     from loopx.chat_store import ChatSessionStore
     host_module = importlib.import_module("loopx_codex_provider_routing.native_host")
+    # The native account owner is macOS-only, but this fence reuses the
+    # platform-neutral Chat ingress lock and store reader. Pin the guard so the
+    # Linux lane exercises the fence instead of stopping at platform_unavailable.
+    monkeypatch.setattr(host_module.sys, "platform", "darwin")
     store = ChatSessionStore(tmp_path / "runtime")
     sid = store.create_session(goal_id="test", agent_id="test", adapter_kind="fake",
                                upstream_thread_id="test", upstream_mode="managed")["session_id"]
